@@ -9,6 +9,7 @@ import { NewAppScreen } from '@react-native/new-app-screen';
 import { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
+  Linking,
   Platform,
   Pressable,
   ScrollView,
@@ -19,11 +20,16 @@ import {
   View,
 } from 'react-native';
 import Purchases from 'react-native-purchases';
+import type { Session } from '@supabase/supabase-js';
 import {
   SafeAreaProvider,
   useSafeAreaInsets,
 } from 'react-native-safe-area-context';
 import { RC_IOS_API_KEY } from '@env';
+import AuthScreen from './AuthScreen';
+import AccountScreen from './AccountScreen';
+import Onboarding from './Onboarding';
+import { supabase } from './supabaseClient';
 
 const REVENUECAT_IOS_API_KEY_PLACEHOLDER: string = 'REVENUECAT_IOS_PUBLIC_SDK_KEY';
 const REVENUECAT_IOS_API_KEY: string = RC_IOS_API_KEY;
@@ -31,6 +37,8 @@ const PRO_ENTITLEMENT_ID: string = 'undelivery Pro';
 
 function App() {
   const isDarkMode = useColorScheme() === 'dark';
+  const [session, setSession] = useState<Session | null>(null);
+  const [isAuthLoading, setIsAuthLoading] = useState(true);
 
   useEffect(() => {
     const configurePurchases = async () => {
@@ -54,15 +62,98 @@ function App() {
     void configurePurchases();
   }, []);
 
+  useEffect(() => {
+    let isMounted = true;
+
+    const loadSession = async () => {
+      const { data } = await supabase.auth.getSession();
+      if (!isMounted) return;
+      setSession(data.session ?? null);
+      setIsAuthLoading(false);
+    };
+
+    void loadSession();
+
+    const { data: authListener } = supabase.auth.onAuthStateChange((_event, newSession) => {
+      setSession(newSession);
+    });
+
+    return () => {
+      isMounted = false;
+      authListener.subscription.unsubscribe();
+    };
+  }, []);
+
+  useEffect(() => {
+    const syncRevenueCatUser = async () => {
+      if (Platform.OS !== 'ios') return;
+      if (!REVENUECAT_IOS_API_KEY || REVENUECAT_IOS_API_KEY === REVENUECAT_IOS_API_KEY_PLACEHOLDER) {
+        return;
+      }
+
+      if (session?.user?.id) {
+        try {
+          await Purchases.logIn(session.user.id);
+        } catch {
+          // Ignore login failures during setup.
+        }
+      } else {
+        try {
+          await Purchases.logOut();
+        } catch {
+          // Ignore logout failures during setup.
+        }
+      }
+    };
+
+    void syncRevenueCatUser();
+  }, [session?.user?.id]);
+
+  useEffect(() => {
+    const handleUrl = async (url: string) => {
+      console.warn('OAuth callback url', url);
+      const { data, error } = await supabase.auth.exchangeCodeForSession(url);
+      if (error) {
+        console.warn('Supabase OAuth error', error.message);
+      } else {
+        console.warn('Supabase OAuth session', data?.session?.user?.email ?? 'no session');
+      }
+    };
+
+    const handleInitialUrl = async () => {
+      const initialUrl = await Linking.getInitialURL();
+      if (initialUrl) {
+        await handleUrl(initialUrl);
+      }
+    };
+
+    void handleInitialUrl();
+    const subscription = Linking.addEventListener('url', ({ url }) => {
+      void handleUrl(url);
+    });
+
+    return () => {
+      subscription.remove();
+    };
+  }, []);
+
   return (
     <SafeAreaProvider>
       <StatusBar barStyle={isDarkMode ? 'light-content' : 'dark-content'} />
-      <AppContent />
+      <Onboarding />
     </SafeAreaProvider>
   );
 }
 
-function AppContent() {
+function AppContent({
+  onSignOut,
+  email,
+  userId,
+}: {
+  onSignOut: () => void;
+  email: string | null;
+  userId: string | null;
+}) {
   const safeAreaInsets = useSafeAreaInsets();
   const [isLoadingOfferings, setIsLoadingOfferings] = useState(false);
   const [offeringsError, setOfferingsError] = useState<string | null>(null);
@@ -70,6 +161,41 @@ function AppContent() {
   const [isPurchasing, setIsPurchasing] = useState(false);
   const [customerInfo, setCustomerInfo] = useState<any | null>(null);
   const [isPro, setIsPro] = useState(false);
+  const [showAccount, setShowAccount] = useState(false);
+  const isPurchaseDisabled = isPurchasing || isPro;
+
+  const syncProfileSubscription = async (info: any) => {
+    if (!userId) return;
+    const entitlement = (info as any)?.entitlements?.active?.[PRO_ENTITLEMENT_ID];
+    const productIdentifier = entitlement?.productIdentifier ?? null;
+    let subscriptionName: string | null = null;
+    let subscriptionPrice: string | null = null;
+
+    if (entitlement && productIdentifier) {
+      try {
+        const products = await Purchases.getProducts([productIdentifier]);
+        const product = products?.[0];
+        subscriptionName = product?.title ?? null;
+        subscriptionPrice = product?.priceString ?? null;
+      } catch {
+        const matchedPackage = packages.find((pkg) => pkg?.product?.identifier === productIdentifier);
+        subscriptionName = matchedPackage?.product?.title ?? null;
+        subscriptionPrice = matchedPackage?.product?.priceString ?? null;
+      }
+    }
+    await supabase
+      .from('profiles')
+      .update({
+        rc_customer_id: (info as any)?.originalAppUserId ?? null,
+        rc_app_user_id: (info as any)?.appUserId ?? null,
+        rc_entitlement_active: Boolean(entitlement),
+        rc_entitlement_id: entitlement ? PRO_ENTITLEMENT_ID : null,
+        rc_subscription_name: subscriptionName,
+        rc_subscription_price: subscriptionPrice,
+        rc_last_event_at: new Date().toISOString(),
+      })
+      .eq('id', userId);
+  };
 
   const loadOfferings = async () => {
     setIsLoadingOfferings(true);
@@ -84,6 +210,7 @@ function AppContent() {
       const info = await Purchases.getCustomerInfo();
       setCustomerInfo(info);
       setIsPro(Boolean((info as any)?.entitlements?.active?.[PRO_ENTITLEMENT_ID]));
+      await syncProfileSubscription(info);
     } catch (e: any) {
       setOfferingsError(e?.message ?? String(e));
       setPackages([]);
@@ -93,6 +220,9 @@ function AppContent() {
   };
 
   const purchase = async (pkg: any) => {
+    if (isPro) {
+      return;
+    }
     setIsPurchasing(true);
     setOfferingsError(null);
 
@@ -101,6 +231,7 @@ function AppContent() {
       const info = (result as any)?.customerInfo ?? (await Purchases.getCustomerInfo());
       setCustomerInfo(info);
       setIsPro(Boolean((info as any)?.entitlements?.active?.[PRO_ENTITLEMENT_ID]));
+      await syncProfileSubscription(info);
     } catch (e: any) {
       if (e?.userCancelled) {
         return;
@@ -119,6 +250,7 @@ function AppContent() {
       const info = await Purchases.restorePurchases();
       setCustomerInfo(info);
       setIsPro(Boolean((info as any)?.entitlements?.active?.[PRO_ENTITLEMENT_ID]));
+      await syncProfileSubscription(info);
     } catch (e: any) {
       setOfferingsError(e?.message ?? String(e));
     } finally {
@@ -130,6 +262,12 @@ function AppContent() {
     void loadOfferings();
   }, []);
 
+  if (showAccount) {
+    return (
+      <AccountScreen email={email} onSignOut={onSignOut} onBack={() => setShowAccount(false)} />
+    );
+  }
+
   return (
     <View style={styles.container}>
       <View style={styles.paywallHeader}>
@@ -138,6 +276,9 @@ function AppContent() {
           <Text style={styles.proStatusText}>{isPro ? 'Status: Pro Active' : 'Status: Free'}</Text>
         </View>
         <View style={styles.headerRight}>
+          <Pressable onPress={() => setShowAccount(true)} style={styles.secondaryButton}>
+            <Text style={styles.secondaryButtonText}>Account</Text>
+          </Pressable>
           <Pressable onPress={() => void restore()} style={styles.secondaryButton}>
             <Text style={styles.secondaryButtonText}>Restore</Text>
           </Pressable>
@@ -176,11 +317,13 @@ function AppContent() {
               <Text style={styles.mutedText}>{pkg?.product?.description ?? ''}</Text>
               <Text style={styles.priceText}>{pkg?.product?.priceString ?? ''}</Text>
               <Pressable
-                disabled={isPurchasing}
+                disabled={isPurchaseDisabled}
                 onPress={() => void purchase(pkg)}
-                style={[styles.ctaButton, isPurchasing ? styles.ctaButtonDisabled : styles.ctaButtonEnabled]}
+                style={[styles.ctaButton, isPurchaseDisabled ? styles.ctaButtonDisabled : styles.ctaButtonEnabled]}
               >
-                <Text style={styles.ctaButtonText}>{isPurchasing ? 'Processing…' : 'Purchase'}</Text>
+                <Text style={styles.ctaButtonText}>
+                  {isPurchasing ? 'Processing…' : isPro ? 'Already Pro' : 'Purchase'}
+                </Text>
               </Pressable>
             </View>
           ))}
