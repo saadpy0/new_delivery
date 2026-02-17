@@ -10,14 +10,17 @@
     "test": "jest"
   },
   "dependencies": {
+    "@react-native-async-storage/async-storage": "^2.2.0",
     "@react-native/new-app-screen": "0.83.1",
     "@supabase/supabase-js": "^2.94.0",
     "react": "19.2.0",
     "react-native": "0.83.1",
+    "react-native-document-picker": "^9.3.1",
     "react-native-dotenv": "^3.4.11",
     "react-native-purchases": "^9.7.5",
     "react-native-safe-area-context": "^5.5.2",
-    "react-native-url-polyfill": "^3.0.0"
+    "react-native-url-polyfill": "^3.0.0",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "@babel/core": "^7.25.2",

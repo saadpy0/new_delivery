@@ -30,6 +30,7 @@
 			<key>CFBundleURLSchemes</key>
 			<array>
 				<string>com.quitbite.quitbite</string>
+				<string>quitbite</string>
 			</array>
 		</dict>
 	</array>

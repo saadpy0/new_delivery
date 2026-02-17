@@ -1,33 +1,47 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   Image,
+  ImageBackground,
   KeyboardAvoidingView,
+  NativeModules,
   Linking,
   Platform,
   Pressable,
   SafeAreaView,
   ScrollView,
+  StatusBar,
   StyleSheet,
   Switch,
   Text,
   TextInput,
   View,
 } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import Purchases from 'react-native-purchases';
 import { supabase } from './supabaseClient';
+import { saveOnboardingData } from './DataService';
 
 const COLORS = {
-  navy: '#0E1730',
-  navySoft: '#18264A',
-  sky: '#A9D4FF',
-  skySoft: '#D7ECFF',
-  ink: '#0F172A',
-  muted: '#6B7280',
+  navy: '#1A1A2E',
+  navySoft: '#2D2D44',
+  sky: '#F5E6D3',
+  skySoft: '#FAF3EB',
+  ink: '#1A1A2E',
+  muted: '#8E8E93',
   white: '#FFFFFF',
+  cream: '#FAF8F5',
+  coral: '#E8734A',
+  sage: '#7BAE7F',
+  gold: '#D4A853',
+  warmGray: '#F2EFEB',
+  softBorder: '#E8E4DF',
 };
 
 const PRO_ENTITLEMENT_ID = 'undelivery Pro';
+const ONBOARDING_DRAFT_KEY = '@onboarding_draft_v1';
+const { ScreenTimeManager, NotificationPermissionManager } = NativeModules;
 
 const SCREENS = [
   { key: 'splash', type: 'splash' },
@@ -40,18 +54,11 @@ const SCREENS = [
       'Most people underestimate delivery spend by 2x once fees, tips, and surge pricing are included.',
   },
   {
-    key: 'fact-2',
-    type: 'fact',
-    title: 'Did you know?',
-    body:
-      'QuitBite shows the real cost of each order and what it steals from your future goals.',
-  },
-  {
     key: 'q1',
     type: 'choice',
     label: 'Question 1',
     question: 'How much do you spend on delivery per week?',
-    options: ['$0–$25', '$26–$50', '$51–$100', '$101–$200', '$200+'],
+    options: ['$0\u2013$25', '$26\u2013$50', '$51\u2013$100', '$101\u2013$200', '$200+'],
   },
   {
     key: 'q2',
@@ -66,7 +73,7 @@ const SCREENS = [
     key: 'q3',
     type: 'choice',
     label: 'Question 3',
-    question: 'What’s the main reason you order delivery?',
+    question: "What\u2019s the main reason you order delivery?",
     options: ['Convenience', 'Cravings', 'No time to cook', 'Stress/comfort', 'Habit'],
   },
   {
@@ -74,7 +81,7 @@ const SCREENS = [
     type: 'choice',
     label: 'Question 4',
     question: 'How old are you?',
-    options: ['Under 18', '18–24', '25–34', '35–44', '45+'],
+    options: ['Under 18', '18\u201324', '25\u201334', '35\u201344', '45+'],
   },
   {
     key: 'q5',
@@ -105,11 +112,9 @@ const SCREENS = [
     options: ['Daily', 'A few times a week', 'Rarely', 'Almost never'],
   },
   {
-    key: 'q9',
-    type: 'choice',
-    label: 'Question 9',
-    question: 'Would a small friction fee (like a $5 penalty) help you pause before ordering?',
-    options: ['Yes, I need that', 'Maybe', 'No'],
+    key: 'consequences',
+    type: 'consequences-combined',
+    title: 'The real cost of delivery addiction',
   },
   {
     key: 'results-prep',
@@ -137,30 +142,6 @@ const SCREENS = [
     body: 'Every skipped order moves you closer to your goals and healthier choices.',
   },
   {
-    key: 'consequence-1',
-    type: 'consequence',
-    title: 'I need more',
-    body: 'The more you order, the more normal it feels. That makes it harder to slow down.',
-  },
-  {
-    key: 'consequence-2',
-    type: 'consequence',
-    title: 'Nothing compares',
-    body: 'Convenience can dull the satisfaction of home-cooked meals and simple routines.',
-  },
-  {
-    key: 'consequence-3',
-    type: 'consequence',
-    title: 'Feeling stuck?',
-    body: 'Frequent orders can pile on guilt, stress, and lost momentum toward your goals.',
-  },
-  {
-    key: 'consequence-4',
-    type: 'consequence',
-    title: 'It adds up',
-    body: 'Over time, small orders become major spending leaks and missed savings wins.',
-  },
-  {
     key: 'name',
     type: 'name',
     title: 'What should we call you?',
@@ -169,18 +150,6 @@ const SCREENS = [
     key: 'budget',
     type: 'budget',
     title: 'Set your weekly delivery budget',
-  },
-  {
-    key: 'auth',
-    type: 'auth',
-    title: 'Create your account',
-    body: 'Save your budget and results across devices.',
-  },
-  {
-    key: 'help-1',
-    type: 'help',
-    title: 'Automated financial friction',
-    body: 'Make ordering feel costly with a custom “pause fee” that helps you slow down.',
   },
   {
     key: 'help-2',
@@ -192,7 +161,33 @@ const SCREENS = [
     key: 'help-3',
     type: 'help',
     title: 'See the opportunity cost',
-    body: 'Every order shows what you’re trading away, so it’s easier to choose your goals.',
+    body: "Every order shows what you\u2019re trading away, so it\u2019s easier to choose your goals.",
+  },
+  {
+    key: 'showcase-1',
+    type: 'showcase',
+    title: 'Block apps when you overspend',
+    body: 'QuitBite automatically shields delivery apps once you hit your weekly budget \u2014 no willpower needed.',
+    showcaseImage: 'block',
+  },
+  {
+    key: 'showcase-2',
+    type: 'showcase',
+    title: 'Track every dollar in real time',
+    body: 'See exactly where your money goes with weekly breakdowns, streaks, and opportunity cost insights.',
+    showcaseImage: 'track',
+  },
+  {
+    key: 'placeholder-1',
+    type: 'placeholder',
+    title: '',
+    body: '',
+  },
+  {
+    key: 'placeholder-2',
+    type: 'placeholder',
+    title: '',
+    body: '',
   },
   {
     key: 'permission',
@@ -206,6 +201,12 @@ const SCREENS = [
     type: 'notifications',
     title: 'Enable helpful reminders',
     body: 'Get nudges that keep you on track and cooking instead of ordering.',
+  },
+  {
+    key: 'select-apps',
+    type: 'select-apps',
+    title: 'Choose apps to block',
+    body: 'Pick the delivery apps you want QuitBite to block when you hit your weekly budget.',
   },
   {
     key: 'rating',
@@ -226,24 +227,15 @@ const SCREENS = [
     title: "You're now prepared to reset.",
   },
   {
-    key: 'motivation-2',
-    type: 'motivation',
-    title: "Don't waste this opportunity.",
-  },
-  {
-    key: 'last-thing',
-    type: 'last-thing',
-    title: "There's one last thing we need from you.",
-  },
-  {
     key: 'access',
     type: 'access',
     title: 'Get full access to',
   },
   {
-    key: 'transformation',
-    type: 'transformation',
-    title: 'The magic you’re looking for is in the work you’re avoiding.',
+    key: 'auth',
+    type: 'auth',
+    title: 'Create your account',
+    body: 'Save your progress and unlock the full experience.',
   },
   {
     key: 'paywall',
@@ -252,7 +244,7 @@ const SCREENS = [
   },
 ];
 
-export default function Onboarding() {
+export default function Onboarding({ onSkipToDashboard, onOnboardingComplete }: { onSkipToDashboard?: () => void; onOnboardingComplete?: () => void }) {
   const [step, setStep] = useState(0);
   const [answers, setAnswers] = useState<Record<string, number>>({});
   const [name, setName] = useState('');
@@ -261,6 +253,7 @@ export default function Onboarding() {
   const [cookingIdeas, setCookingIdeas] = useState(true);
   const [selectedPlan, setSelectedPlan] = useState<'annual' | 'monthly' | null>('annual');
   const [authMode, setAuthMode] = useState<'sign_up' | 'sign_in'>('sign_up');
+  const [didSignIn, setDidSignIn] = useState(false);
   const [authEmail, setAuthEmail] = useState('');
   const [authPassword, setAuthPassword] = useState('');
   const [authError, setAuthError] = useState<string | null>(null);
@@ -273,10 +266,65 @@ export default function Onboarding() {
   const [offeringsError, setOfferingsError] = useState<string | null>(null);
   const [isPurchasing, setIsPurchasing] = useState(false);
   const [customerInfo, setCustomerInfo] = useState<any | null>(null);
+  const [selectedAppCount, setSelectedAppCount] = useState(0);
+  const [affirmation, setAffirmation] = useState('');
   const totalSteps = SCREENS.length;
   const progress = useMemo(() => (step + 1) / totalSteps, [step, totalSteps]);
   const current = SCREENS[step];
   const oauthRedirectUrl = 'com.quitbite.quitbite://login-callback';
+
+  useEffect(() => {
+    const restoreDraft = async () => {
+      try {
+        const raw = await AsyncStorage.getItem(ONBOARDING_DRAFT_KEY);
+        if (!raw) return;
+        const draft = JSON.parse(raw);
+        if (typeof draft.step === 'number') setStep(draft.step);
+        if (typeof draft.name === 'string') setName(draft.name);
+        if (typeof draft.weeklyBudget === 'string') setWeeklyBudget(draft.weeklyBudget);
+        if (typeof draft.affirmation === 'string') setAffirmation(draft.affirmation);
+        if (typeof draft.selectedAppCount === 'number') setSelectedAppCount(draft.selectedAppCount);
+        if (typeof draft.budgetReminders === 'boolean') setBudgetReminders(draft.budgetReminders);
+        if (typeof draft.cookingIdeas === 'boolean') setCookingIdeas(draft.cookingIdeas);
+        if (draft.answers && typeof draft.answers === 'object') setAnswers(draft.answers);
+      } catch (error) {
+        console.warn('Failed to restore onboarding draft', error);
+      }
+    };
+    void restoreDraft();
+  }, []);
+
+  useEffect(() => {
+    const saveDraft = async () => {
+      try {
+        await AsyncStorage.setItem(
+          ONBOARDING_DRAFT_KEY,
+          JSON.stringify({
+            step,
+            name,
+            weeklyBudget,
+            affirmation,
+            selectedAppCount,
+            budgetReminders,
+            cookingIdeas,
+            answers,
+          }),
+        );
+      } catch (error) {
+        console.warn('Failed to save onboarding draft', error);
+      }
+    };
+    void saveDraft();
+  }, [
+    step,
+    name,
+    weeklyBudget,
+    affirmation,
+    selectedAppCount,
+    budgetReminders,
+    cookingIdeas,
+    answers,
+  ]);
 
   const handleNext = () => {
     setStep((prev) => Math.min(totalSteps - 1, prev + 1));
@@ -358,9 +406,57 @@ export default function Onboarding() {
   };
 
   const handleSkipQuiz = () => {
-    const index = SCREENS.findIndex((screen) => screen.key === 'q9');
+    const index = SCREENS.findIndex((screen) => screen.key === 'consequences');
     if (index !== -1) {
       setStep(index);
+    }
+  };
+
+  const handleRequestScreenTime = async () => {
+    if (!ScreenTimeManager?.requestAuthorization) {
+      Alert.alert('Unavailable', 'Screen Time permission is not available on this device.');
+      return;
+    }
+    try {
+      await ScreenTimeManager.requestAuthorization();
+      Alert.alert('Access granted', 'Screen Time permission enabled.');
+    } catch (error: any) {
+      Alert.alert('Permission failed', error?.message ?? 'Unable to enable Screen Time access.');
+    }
+  };
+
+  const requestNotificationPermission = async () => {
+    if (!NotificationPermissionManager?.requestAuthorization) {
+      Alert.alert('Unavailable', 'Notification permission is not available on this device.');
+      return false;
+    }
+    try {
+      const granted = await NotificationPermissionManager.requestAuthorization();
+      if (!granted) {
+        Alert.alert('Permission denied', 'Please allow notifications to enable reminders.');
+      }
+      return granted;
+    } catch (error: any) {
+      Alert.alert('Permission failed', error?.message ?? 'Unable to enable notifications.');
+      return false;
+    }
+  };
+
+  const handleNotificationToggle = async (type: 'budget' | 'cooking', value: boolean) => {
+    if (!value) {
+      if (type === 'budget') {
+        setBudgetReminders(false);
+      } else {
+        setCookingIdeas(false);
+      }
+      return;
+    }
+
+    const granted = await requestNotificationPermission();
+    if (type === 'budget') {
+      setBudgetReminders(granted);
+    } else {
+      setCookingIdeas(granted);
     }
   };
 
@@ -406,41 +502,49 @@ export default function Onboarding() {
     }, {});
   };
 
-  const saveOnboarding = async () => {
-    if (onboardingSaving || onboardingSaved) return;
+  const saveOnboarding = async (): Promise<boolean> => {
+    if (onboardingSaving || onboardingSaved) return false;
     setOnboardingSaving(true);
-    const { data, error } = await supabase.auth.getUser();
-    const userId = data?.user?.id;
-    if (error || !userId) {
-      console.warn('Failed to load user for onboarding save', error?.message ?? 'no user');
-      setOnboardingSaving(false);
-      return;
-    }
     const weeklyBudgetValue = Number(weeklyBudget);
-    const payload = {
-      user_id: userId,
-      name: name.trim() || null,
-      weekly_budget: Number.isFinite(weeklyBudgetValue) ? weeklyBudgetValue : null,
+    const success = await saveOnboardingData({
       quiz_answers: buildQuizAnswers(),
-      updated_at: new Date().toISOString(),
-    };
-    const { error: saveError } = await supabase.from('onboarding').upsert(payload, {
-      onConflict: 'user_id',
+      name: name.trim(),
+      weekly_budget: Number.isFinite(weeklyBudgetValue) ? weeklyBudgetValue : 120,
+      affirmation: affirmation.trim(),
+      notification_prefs: {
+        budget_reminders: budgetReminders,
+        cooking_ideas: cookingIdeas,
+      },
+      selected_app_count: selectedAppCount,
+      blocking_mode: 'moderate',
     });
-    if (saveError) {
-      console.warn('Failed to save onboarding', saveError.message);
-    } else {
+    if (success) {
       setOnboardingSaved(true);
+      await AsyncStorage.removeItem(ONBOARDING_DRAFT_KEY);
+    } else {
+      console.warn('Failed to save onboarding data');
     }
     setOnboardingSaving(false);
+    return success;
   };
 
   useEffect(() => {
     if (current.type !== 'auth') return;
-    if (authComplete) {
-      handleNext();
+    if (!authComplete || !didSignIn) return;
+    if (onboardingSaved) {
+      onOnboardingComplete?.();
+      return;
     }
-  }, [authComplete, current.type]);
+    if (onboardingSaving) return;
+    const completeOAuthOnboarding = async () => {
+      const saved = await saveOnboarding();
+      if (saved) {
+        onOnboardingComplete?.();
+      }
+    };
+    void completeOAuthOnboarding();
+  }, [authComplete, didSignIn, current.type, onboardingSaved, onboardingSaving]);
+
 
   useEffect(() => {
     if (!authComplete) return;
@@ -453,7 +557,15 @@ export default function Onboarding() {
   }, [current.type]);
 
   useEffect(() => {
-    if (current.key !== 'help-1') return;
+    if (current.type !== 'fact-progress') return;
+    const timer = setTimeout(() => {
+      handleNext();
+    }, 5000);
+    return () => clearTimeout(timer);
+  }, [current.type]);
+
+  useEffect(() => {
+    if (current.key !== 'paywall') return;
     if (!authComplete || onboardingSaved || onboardingSaving) return;
     void saveOnboarding();
   }, [authComplete, current.key, onboardingSaved, onboardingSaving]);
@@ -480,12 +592,14 @@ export default function Onboarding() {
           email: authEmail.trim(),
           password: authPassword,
         };
-        const { error } =
-          authMode === 'sign_in'
+        const isSignIn = authMode === 'sign_in';
+        const { error } = isSignIn
             ? await supabase.auth.signInWithPassword(payload)
             : await supabase.auth.signUp(payload);
         if (error) {
           setAuthError(error.message);
+        } else if (isSignIn) {
+          onOnboardingComplete?.();
         } else {
           handleNext();
         }
@@ -495,6 +609,7 @@ export default function Onboarding() {
       const handleGoogleAuth = async () => {
         setAuthLoading(true);
         setAuthError(null);
+        setDidSignIn(true);
         const { data, error } = await supabase.auth.signInWithOAuth({
           provider: 'google',
           options: {
@@ -697,10 +812,17 @@ export default function Onboarding() {
               </View>
             ))}
           </View>
-          <View style={styles.signatureCard}>
-            <View style={styles.signatureLine} />
-            <View style={[styles.signatureLine, styles.signatureLineShort]} />
-            <Text style={styles.signatureHint}>Sign here</Text>
+          <View style={styles.affirmationCard}>
+            <Text style={styles.affirmationLabel}>Type your affirmation</Text>
+            <TextInput
+              value={affirmation}
+              onChangeText={setAffirmation}
+              placeholder="I commit to taking control of my habits"
+              placeholderTextColor="rgba(255,255,255,0.3)"
+              style={styles.affirmationInput}
+              multiline
+              textAlignVertical="top"
+            />
           </View>
         </View>
       );
@@ -710,16 +832,14 @@ export default function Onboarding() {
       return (
         <View style={styles.motivationWrap}>
           <Text style={styles.motivationTitle}>{current.title}</Text>
-          <Text style={styles.motivationHint}>Tap to continue</Text>
         </View>
       );
     }
 
-    if (current.type === 'last-thing') {
+    if (current.type === 'placeholder') {
       return (
-        <View style={styles.motivationWrap}>
-          <Text style={styles.motivationTitle}>{current.title}</Text>
-          <Text style={styles.motivationHint}>Tap to continue</Text>
+        <View style={styles.placeholderWrap}>
+          <Text style={styles.placeholderText}>Coming soon</Text>
         </View>
       );
     }
@@ -753,23 +873,6 @@ export default function Onboarding() {
             <Text style={styles.accessTestimonialBody}>
               "I saved my first $120 in a month. The reminders actually work."
             </Text>
-          </View>
-        </View>
-      );
-    }
-
-    if (current.type === 'transformation') {
-      return (
-        <View style={styles.transformationWrap}>
-          <Text style={styles.transformationTitle}>{current.title}</Text>
-          <View style={styles.signatureCard}>
-            <Text style={styles.signatureHint}>Signature of commitment</Text>
-            <View style={styles.signatureLine} />
-          </View>
-          <Text style={styles.transformationTag}>IT’S TIME FOR CHANGE</Text>
-          <Text style={styles.transformationDate}>Sunday 1 March 2026</Text>
-          <View style={styles.transformationFootnote}>
-            <Text style={styles.transformationFootnoteText}>Start my transformation</Text>
           </View>
         </View>
       );
@@ -809,10 +912,11 @@ export default function Onboarding() {
     }
 
     if (current.type === 'help') {
+      const helpEmoji = current.key === 'help-1' ? '💸' : current.key === 'help-2' ? '🧑‍🍳' : '🎯';
       return (
         <View style={styles.helpWrap}>
           <View style={styles.illustrationLight}>
-            <Text style={styles.illustrationEmoji}>🚀</Text>
+            <Text style={styles.illustrationEmoji}>{helpEmoji}</Text>
           </View>
           <Text style={styles.helpTitle}>{current.title}</Text>
           <Text style={styles.helpBody}>{current.body}</Text>
@@ -830,7 +934,7 @@ export default function Onboarding() {
             <Text style={styles.permissionBody}>
               This lets QuitBite block delivery apps when you hit your weekly budget.
             </Text>
-            <Pressable style={styles.permissionButton}>
+            <Pressable onPress={handleRequestScreenTime} style={styles.permissionButton}>
               <Text style={styles.permissionButtonText}>Open Settings</Text>
             </Pressable>
           </View>
@@ -846,11 +950,17 @@ export default function Onboarding() {
           <View style={styles.notificationCard}>
             <View style={styles.notificationRow}>
               <Text style={styles.notificationText}>Daily budget reminders</Text>
-              <Switch value={budgetReminders} onValueChange={setBudgetReminders} />
+              <Switch
+                value={budgetReminders}
+                onValueChange={(value) => handleNotificationToggle('budget', value)}
+              />
             </View>
             <View style={styles.notificationRow}>
               <Text style={styles.notificationText}>Cooking ideas before meals</Text>
-              <Switch value={cookingIdeas} onValueChange={setCookingIdeas} />
+              <Switch
+                value={cookingIdeas}
+                onValueChange={(value) => handleNotificationToggle('cooking', value)}
+              />
             </View>
           </View>
         </View>
@@ -859,13 +969,96 @@ export default function Onboarding() {
 
 
     if (current.type === 'consequence') {
+      const consequenceMascot =
+        current.key === 'consequence-1' ? require('./mascots/fatty.png') :
+        current.key === 'consequence-2' ? require('./mascots/boiling.png') :
+        current.key === 'consequence-3' ? require('./mascots/fattysleep.png') :
+        require('./mascots/brokeahh.png');
       return (
         <View style={styles.consequenceWrap}>
-          <View style={styles.illustrationLight}>
-            <Text style={styles.illustrationEmoji}>⚠️</Text>
-          </View>
+          <Image source={consequenceMascot} style={styles.consequenceMascotImage} />
           <Text style={styles.consequenceTitle}>{current.title}</Text>
           <Text style={styles.consequenceBody}>{current.body}</Text>
+        </View>
+      );
+    }
+
+    if (current.type === 'select-apps') {
+      const handleSelectApps = async () => {
+        if (!ScreenTimeManager?.selectApps) {
+          Alert.alert('Unavailable', 'App selection is not available on this device.');
+          return;
+        }
+        try {
+          const result = await ScreenTimeManager.selectApps();
+          if (result?.cancelled) return;
+          const count = result?.count ?? 0;
+          setSelectedAppCount(count);
+          if (count > 0) {
+            Alert.alert('Apps selected', `${count} app${count === 1 ? '' : 's'} will be blocked when you exceed your budget.`);
+          }
+        } catch (error: any) {
+          Alert.alert('Error', error?.message ?? 'Unable to select apps.');
+        }
+      };
+      return (
+        <View style={styles.permissionWrap}>
+          <Text style={styles.formTitle}>{current.title}</Text>
+          <Text style={styles.formHint}>{current.body}</Text>
+          <View style={styles.permissionCard}>
+            <Text style={styles.permissionTitle}>
+              {selectedAppCount > 0
+                ? `${selectedAppCount} app${selectedAppCount === 1 ? '' : 's'} selected`
+                : 'No apps selected yet'}
+            </Text>
+            <Text style={styles.permissionBody}>
+              Tap below to open the app picker and choose which delivery apps to block.
+            </Text>
+            <Pressable onPress={handleSelectApps} style={styles.permissionButton}>
+              <Text style={styles.permissionButtonText}>
+                {selectedAppCount > 0 ? 'Change selection' : 'Select apps'}
+              </Text>
+            </Pressable>
+          </View>
+        </View>
+      );
+    }
+
+    if (current.type === 'consequences-combined') {
+      const cards = [
+        { mascot: require('./mascots/fatty.png'), title: 'I need more', body: 'The more you order, the more normal it feels. That makes it harder to slow down.' },
+        { mascot: require('./mascots/boiling.png'), title: 'Nothing compares', body: 'Convenience can dull the satisfaction of home-cooked meals and simple routines.' },
+        { mascot: require('./mascots/fattysleep.png'), title: 'Feeling stuck?', body: 'Frequent orders can pile on guilt, stress, and lost momentum toward your goals.' },
+        { mascot: require('./mascots/brokeahh.png'), title: 'It adds up', body: 'Over time, small orders become major spending leaks and missed savings wins.' },
+      ];
+      return (
+        <View style={styles.consequencesCombinedWrap}>
+          <Text style={styles.consequencesCombinedTitle}>{current.title}</Text>
+          <View style={styles.consequencesCombinedGrid}>
+            {cards.map((card) => (
+              <View key={card.title} style={styles.consequenceCard}>
+                <Image source={card.mascot} style={styles.consequenceCardImage} />
+                <Text style={styles.consequenceCardTitle}>{card.title}</Text>
+                <Text style={styles.consequenceCardBody}>{card.body}</Text>
+              </View>
+            ))}
+          </View>
+          <Text style={styles.preparingResultsText}>Preparing your results...</Text>
+        </View>
+      );
+    }
+
+    if (current.type === 'showcase') {
+      const showcaseImg = current.showcaseImage === 'block'
+        ? require('./mascots/fatty.png')
+        : require('./mascots/scale.png');
+      return (
+        <View style={styles.showcaseWrap}>
+          <View style={styles.showcaseImageWrap}>
+            <Image source={showcaseImg} style={styles.showcaseImage} />
+          </View>
+          <Text style={styles.showcaseTitle}>{current.title}</Text>
+          <Text style={styles.showcaseBody}>{current.body}</Text>
         </View>
       );
     }
@@ -874,8 +1067,8 @@ export default function Onboarding() {
       return (
         <View style={styles.resultsWrap}>
           <Text style={styles.resultsTitle}>Your results</Text>
-          <View style={styles.resultsBarTrack}>
-            <View style={[styles.resultsBarFill, { width: '72%' }]} />
+          <View style={styles.resultsMascotArea}>
+            <Image source={require('./mascots/scale.png')} style={styles.resultsMascotImage} />
           </View>
           <Text style={styles.resultsSubtitle}>You&apos;re spending more than you think.</Text>
           <Text style={styles.resultsBody}>
@@ -899,11 +1092,12 @@ export default function Onboarding() {
     }
 
     if (current.type === 'ack') {
+      const ackMascot = current.key === 'ack-1'
+        ? require('./mascots/bulb.png')
+        : require('./mascots/climb.png');
       return (
         <View style={styles.ackWrap}>
-          <View style={styles.ackIconWrap}>
-            <Text style={styles.ackIcon}>✨</Text>
-          </View>
+          <Image source={ackMascot} style={styles.ackMascotImage} />
           <Text style={styles.ackTitle}>{current.title}</Text>
           <Text style={styles.ackBody}>{current.body}</Text>
         </View>
@@ -913,27 +1107,30 @@ export default function Onboarding() {
     if (current.type === 'welcome') {
       return (
         <View style={styles.welcomeWrap}>
-          <Text style={styles.welcomeHintTop}>Existing user? Sign in</Text>
-          <View style={styles.illustrationWarm}>
-            <Text style={styles.illustrationEmoji}>🍳</Text>
+          <View style={styles.welcomeMascotArea}>
+            <Image
+              source={require('./other_imgs/mascot_transp.png')}
+              style={styles.welcomeMascotImage}
+            />
           </View>
-          <Text style={styles.welcomeTitle}>Welcome!</Text>
+          <Text style={styles.welcomeTitle}>Welcome.</Text>
           <Text style={styles.welcomeBody}>
-            Let&apos;s curb delivery spending and build smarter food habits that actually stick.
+            Let’s understand your food delivery habits and help you spend with intention.
           </Text>
         </View>
       );
     }
 
     if (current.type === 'fact') {
+      const factMascot = current.key === 'fact-1'
+        ? require('./other_imgs/mascot_screen2.png')
+        : require('./other_imgs/mascot_screen3.png');
+      const isFactOne = current.key === 'fact-1';
       return (
-        <View style={styles.factWrap}>
-          <View style={styles.illustrationLight}>
-            <Text style={styles.illustrationEmoji}>💡</Text>
-          </View>
-          <Text style={styles.factTitle}>{current.title}</Text>
-          <Text style={styles.factBody}>{current.body}</Text>
-          <View style={styles.factProgress} />
+        <View style={[styles.factWrap, isFactOne && styles.factOneWrap]}>
+          <Image source={factMascot} style={[styles.factMascotImage, isFactOne && styles.factOneMascotImage]} />
+          <Text style={[styles.factLabel, isFactOne && styles.factOneLabel]}>Did you know?</Text>
+          <Text style={[styles.factBody, isFactOne && styles.factOneBody]}>{current.body}</Text>
         </View>
       );
     }
@@ -941,17 +1138,10 @@ export default function Onboarding() {
     if (current.type === 'fact-progress') {
       return (
         <View style={styles.factWrap}>
-          <View style={styles.illustrationLight}>
-            <Text style={styles.illustrationEmoji}>🌿</Text>
-          </View>
-          <Text style={styles.factTitle}>{current.title}</Text>
+          <Image source={require('./mascots/cutting.png')} style={[styles.factMascotImage, styles.opportunityMascotImage]} />
+          <Text style={styles.factLabel}>{current.title}</Text>
           <Text style={styles.factBody}>{current.body}</Text>
-          <View style={styles.resultsProgress}>
-            <View style={styles.resultsBarTrack}>
-              <View style={[styles.resultsBarFill, { width: `${(current.progressValue ?? 0) * 100}%` }]} />
-            </View>
-            <Text style={styles.resultsLabel}>{current.progressLabel}</Text>
-          </View>
+          <Text style={styles.preparingResultsText}>Preparing your results...</Text>
         </View>
       );
     }
@@ -1030,32 +1220,34 @@ export default function Onboarding() {
 
   const isDarkScreen =
     current.type === 'splash' ||
+    current.type === 'welcome' ||
     current.type === 'rating' ||
     current.type === 'commitment' ||
     current.type === 'motivation' ||
-    current.type === 'last-thing' ||
     current.type === 'access' ||
-    current.type === 'transformation' ||
     current.type === 'paywall';
   const backgroundColor = useMemo(() => {
-    if (current.type === 'welcome') return COLORS.sky;
     if (isDarkScreen) return COLORS.navy;
-    return COLORS.white;
-  }, [current.type, isDarkScreen]);
+    if (current.type === 'fact' || current.type === 'fact-progress') return '#FFFFFF';
+    if (current.type === 'ack' || current.type === 'consequence' || current.type === 'consequences-combined') return '#FFFFFF';
+    if (current.type === 'choice' || current.type === 'wheel') return '#FFFFFF';
+    if (current.type === 'showcase') return '#FFFFFF';
+    return COLORS.cream;
+  }, [current.type, current.key, isDarkScreen]);
 
   const primaryLabel =
     current.type === 'welcome'
       ? 'Start quiz'
-      : current.key === 'q9'
+      : current.type === 'consequences-combined'
         ? 'See your results'
         : current.type === 'results'
           ? 'Continue'
           : current.type === 'ack'
             ? 'Continue'
-            : current.type === 'symptoms-intro'
-              ? current.cta
-              : current.type === 'symptoms-select'
-                ? current.cta
+            : current.type === 'showcase'
+              ? 'Continue'
+              : current.type === 'placeholder'
+                ? 'Continue'
                 : current.type === 'name'
                   ? 'Continue'
                   : current.type === 'budget'
@@ -1066,12 +1258,12 @@ export default function Onboarding() {
                         ? 'Continue'
                         : current.type === 'notifications'
                           ? 'Continue'
-                          : current.type === 'access' || current.type === 'transformation'
+                          : current.type === 'select-apps'
+                            ? 'Continue'
+                            : current.type === 'access'
                             ? 'Start my transformation'
-                            : current.type === 'last-thing'
-                              ? 'Continue'
-                              : current.type === 'paywall'
-                                ? 'Start my journey today'
+                            : current.type === 'paywall'
+                              ? 'Start my journey today'
                               : current.type === 'wheel'
                                 ? current.cta
                                 : 'Next';
@@ -1086,11 +1278,13 @@ export default function Onboarding() {
           ? name.trim().length === 0
           : current.type === 'budget'
             ? weeklyBudget.trim().length === 0
-            : current.type === 'auth'
-              ? !authComplete
-              : current.type === 'paywall'
-                ? selectedPlan === null || isPurchasing || isLoadingOfferings
-            : false;
+            : current.type === 'commitment'
+              ? affirmation.trim().length < 10
+              : current.type === 'auth'
+                ? !authComplete
+                : current.type === 'paywall'
+                  ? selectedPlan === null || isPurchasing || isLoadingOfferings
+              : false;
 
   const handlePurchase = async () => {
     if (!isPaywall) {
@@ -1108,7 +1302,7 @@ export default function Onboarding() {
       const info = (result as any)?.customerInfo ?? (await Purchases.getCustomerInfo());
       setCustomerInfo(info);
       await syncSubscription(info);
-      handleNext();
+      onOnboardingComplete?.();
     } catch (e: any) {
       if (e?.userCancelled) {
         return;
@@ -1119,6 +1313,43 @@ export default function Onboarding() {
     }
   };
 
+  if (current.type === 'welcome') {
+    return (
+      <View style={styles.safeArea}>
+        <StatusBar barStyle="light-content" translucent backgroundColor="transparent" />
+        <ImageBackground
+          source={require('./screens_bg/screen2.png')}
+          style={styles.container}
+          resizeMode="cover"
+        >
+          <ScrollView contentContainerStyle={styles.welcomeContent} showsVerticalScrollIndicator={false}>
+            {renderContent()}
+          </ScrollView>
+          <View style={styles.welcomeBottomBar}>
+            <Pressable onPress={() => {
+              setAuthMode('sign_in');
+              const authIndex = SCREENS.findIndex((s) => s.type === 'auth');
+              if (authIndex !== -1) setStep(authIndex);
+            }}>
+              <Text style={styles.welcomeSignInHint}>Existing user? Sign in</Text>
+            </Pressable>
+            <Pressable
+              onPress={handleNext}
+              style={[styles.primaryButton, styles.primaryButtonWarm, { width: '100%' }]}
+            >
+              <Text style={[styles.primaryButtonText, styles.primaryButtonTextWarm]}>
+                {primaryLabel}
+              </Text>
+            </Pressable>
+            <Pressable onPress={() => onSkipToDashboard?.()} style={styles.welcomeSkipButton}>
+              <Text style={styles.welcomeSkipText}>Skip onboarding</Text>
+            </Pressable>
+          </View>
+        </ImageBackground>
+      </View>
+    );
+  }
+
   return (
     <SafeAreaView style={[styles.safeArea, { backgroundColor }]}>
       <KeyboardAvoidingView
@@ -1126,23 +1357,7 @@ export default function Onboarding() {
         style={[styles.container, { backgroundColor }]}
       >
         <View style={styles.topNav}>
-          {isQuiz ? (
-            <View style={styles.quizProgressTrack}>
-              <View style={[styles.quizProgressFill, { width: `${progress * 100}%` }]} />
-            </View>
-          ) : null}
-          {!isQuiz ? (
-            <View style={[styles.nonQuizProgressTrack, isDarkScreen && styles.nonQuizProgressTrackDark]}>
-              <View
-                style={[
-                  styles.nonQuizProgressFill,
-                  isDarkScreen && styles.nonQuizProgressFillDark,
-                  { width: `${progress * 100}%` },
-                ]}
-              />
-            </View>
-          ) : null}
-          {step > 0 && current.key !== 'help-1' ? (
+          {step > 0 && current.key !== 'help-2' && current.key !== 'results' && current.type !== 'fact-progress' ? (
             <Pressable onPress={handleBack} style={styles.backButton}>
               <Text style={[styles.backIcon, isDarkScreen && styles.backIconLight]}>‹</Text>
             </Pressable>
@@ -1155,15 +1370,24 @@ export default function Onboarding() {
           {renderContent()}
         </ScrollView>
 
-        {current.type === 'splash' || current.type === 'auth' ? null : (
+        {current.type === 'splash' || current.type === 'auth' || current.type === 'fact-progress' ? null : (
           <View style={styles.bottomBar}>
+            <View style={[styles.bottomProgressTrack, isDarkScreen && styles.bottomProgressTrackDark]}>
+              <View
+                style={[
+                  styles.bottomProgressFill,
+                  isDarkScreen && styles.bottomProgressFillDark,
+                  { width: `${progress * 100}%` },
+                ]}
+              />
+            </View>
             <Pressable
               onPress={isPaywall ? handlePurchase : handleNext}
               disabled={isNextDisabled}
               style={[
                 styles.primaryButton,
                 current.type === 'welcome' && styles.primaryButtonWarm,
-                isDarkScreen && styles.primaryButtonLight,
+                isDarkScreen && current.type !== 'welcome' && styles.primaryButtonLight,
                 isNextDisabled && styles.primaryButtonDisabled,
               ]}
             >
@@ -1171,7 +1395,7 @@ export default function Onboarding() {
                 style={[
                   styles.primaryButtonText,
                   current.type === 'welcome' && styles.primaryButtonTextWarm,
-                  isDarkScreen && styles.primaryButtonTextDark,
+                  isDarkScreen && current.type !== 'welcome' && styles.primaryButtonTextDark,
                 ]}
               >
                 {isPurchasing && isPaywall ? 'Processing…' : primaryLabel}
@@ -1196,19 +1420,56 @@ const styles = StyleSheet.create({
     paddingTop: 4,
     minHeight: 30,
   },
+  welcomeTopNav: {
+    paddingHorizontal: 12,
+    paddingTop: 60,
+    minHeight: 30,
+  },
+  welcomeBottomBar: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    paddingHorizontal: 24,
+    paddingBottom: 44,
+    paddingTop: 10,
+    backgroundColor: 'transparent',
+    alignItems: 'center',
+  },
+  welcomeSignInHint: {
+    fontSize: 14,
+    color: 'rgba(255,255,255,0.55)',
+    marginBottom: 14,
+    letterSpacing: 0.2,
+  },
+  welcomeSkipButton: {
+    marginTop: 12,
+  },
+  welcomeSkipText: {
+    fontSize: 14,
+    color: 'rgba(255,255,255,0.75)',
+    fontWeight: '600',
+  },
+  welcomeContent: {
+    paddingHorizontal: 24,
+    paddingTop: 70,
+    paddingBottom: 160,
+    flexGrow: 1,
+  },
   quizProgressTrack: {
     position: 'absolute',
     left: 24,
     right: 24,
     top: 8,
-    height: 3,
+    height: 4,
     borderRadius: 999,
-    backgroundColor: '#E5ECF6',
+    backgroundColor: COLORS.softBorder,
     overflow: 'hidden',
   },
   quizProgressFill: {
-    height: 3,
-    backgroundColor: COLORS.navy,
+    height: 4,
+    borderRadius: 999,
+    backgroundColor: '#4A6CF7',
   },
   backButton: {
     width: 32,
@@ -1238,50 +1499,64 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   logoMark: {
-    width: 120,
-    height: 120,
-    borderRadius: 30,
+    width: 130,
+    height: 130,
+    borderRadius: 36,
     backgroundColor: 'transparent',
     alignItems: 'center',
     justifyContent: 'center',
   },
   logoImage: {
-    width: 84,
-    height: 84,
+    width: 90,
+    height: 90,
     resizeMode: 'contain',
   },
   welcomeWrap: {
-    marginTop: 20,
+    marginTop: 12,
+    flex: 1,
+  },
+  welcomeMascotArea: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 16,
+    marginBottom: 28,
+  },
+  welcomeMascotImage: {
+    width: 160,
+    height: 185,
+    resizeMode: 'contain',
   },
   illustrationWarm: {
-    height: 200,
-    borderRadius: 28,
-    backgroundColor: COLORS.skySoft,
+    height: 220,
+    borderRadius: 32,
+    backgroundColor: COLORS.warmGray,
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 24,
+    marginBottom: 28,
   },
   illustrationLight: {
-    height: 140,
-    borderRadius: 24,
-    backgroundColor: COLORS.skySoft,
+    height: 150,
+    borderRadius: 28,
+    backgroundColor: COLORS.warmGray,
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 24,
+    marginBottom: 28,
   },
   illustrationEmoji: {
-    fontSize: 48,
+    fontSize: 52,
   },
   welcomeTitle: {
-    fontSize: 32,
-    fontWeight: '700',
-    color: COLORS.ink,
-    marginBottom: 12,
+    fontSize: 38,
+    fontWeight: '800',
+    color: '#FFFFFF',
+    marginBottom: 14,
+    letterSpacing: -0.8,
   },
   welcomeBody: {
-    fontSize: 16,
-    lineHeight: 24,
-    color: COLORS.ink,
+    fontSize: 17,
+    lineHeight: 28,
+    color: 'rgba(255,255,255,0.65)',
+    fontFamily: Platform.OS === 'ios' ? 'Helvetica Neue' : 'sans-serif',
   },
   welcomeHint: {
     fontSize: 14,
@@ -1294,190 +1569,254 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   welcomeHintTop: {
-    fontSize: 13,
-    color: COLORS.muted,
-    marginBottom: 12,
+    fontSize: 14,
+    color: 'rgba(255,255,255,0.55)',
+    marginBottom: 18,
+    letterSpacing: 0.2,
   },
   nonQuizProgressTrack: {
     position: 'absolute',
     left: 24,
     right: 24,
     top: 8,
-    height: 3,
+    height: 4,
     borderRadius: 999,
-    backgroundColor: '#E5ECF6',
+    backgroundColor: COLORS.softBorder,
     overflow: 'hidden',
   },
   nonQuizProgressTrackDark: {
-    backgroundColor: 'rgba(255,255,255,0.2)',
+    backgroundColor: 'rgba(255,255,255,0.15)',
   },
   nonQuizProgressFill: {
-    height: 3,
-    backgroundColor: COLORS.navy,
+    height: 4,
+    borderRadius: 999,
+    backgroundColor: '#4A6CF7',
   },
   nonQuizProgressFillDark: {
-    backgroundColor: '#FFFFFF',
+    backgroundColor: '#7B9BFF',
   },
   factWrap: {
-    marginTop: 24,
+    marginTop: 0,
     alignItems: 'center',
-    textAlign: 'center',
+    flex: 1,
+    justifyContent: 'center',
   },
-  factTitle: {
-    fontSize: 18,
-    fontWeight: '700',
-    color: COLORS.navy,
+  factOneWrap: {
+    justifyContent: 'flex-start',
+    paddingTop: 18,
+  },
+  factMascotImage: {
+    width: 320,
+    height: 370,
+    resizeMode: 'contain',
+    marginBottom: 12,
+  },
+  factOneMascotImage: {
+    marginBottom: 4,
+    marginTop: -8,
+  },
+  opportunityMascotImage: {
+    width: 280,
+    height: 320,
+    marginBottom: 4,
+  },
+  factLabel: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#5B6ABF',
+    marginBottom: 18,
+    letterSpacing: 0.2,
+  },
+  factOneLabel: {
     marginBottom: 12,
   },
   factBody: {
-    fontSize: 16,
-    lineHeight: 24,
+    fontSize: 22,
+    lineHeight: 34,
     color: COLORS.ink,
     textAlign: 'center',
+    fontWeight: '500',
+    letterSpacing: -0.3,
+    fontFamily: Platform.OS === 'ios' ? 'Helvetica Neue' : 'sans-serif',
+  },
+  factOneBody: {
+    maxWidth: '92%',
   },
   factProgress: {
     width: '100%',
-    marginTop: 24,
+    marginTop: 28,
     alignItems: 'center',
   },
   resultsProgress: {
     width: '100%',
-    marginTop: 24,
+    marginTop: 28,
     alignItems: 'center',
   },
   resultsBarTrack: {
-    height: 3,
+    height: 5,
     width: '100%',
-    backgroundColor: '#E5ECF6',
+    backgroundColor: COLORS.softBorder,
     borderRadius: 999,
     overflow: 'hidden',
   },
   resultsBarFill: {
-    height: 3,
-    backgroundColor: COLORS.navy,
+    height: 5,
+    borderRadius: 999,
+    backgroundColor: '#4A6CF7',
   },
   resultsLabel: {
     fontSize: 12,
-    marginTop: 8,
+    marginTop: 10,
     color: COLORS.muted,
   },
   resultsWrap: {
-    marginTop: 12,
+    marginTop: 6,
   },
   resultsTitle: {
-    fontSize: 20,
-    fontWeight: '700',
+    fontSize: 28,
+    fontWeight: '800',
     color: COLORS.ink,
-    marginBottom: 12,
+    marginBottom: 16,
+    letterSpacing: -0.6,
+  },
+  resultsMascotArea: {
+    alignItems: 'center',
+    marginBottom: 4,
+  },
+  resultsMascotImage: {
+    width: 180,
+    height: 160,
+    resizeMode: 'contain',
   },
   resultsSubtitle: {
-    marginTop: 16,
-    fontSize: 16,
+    marginTop: 6,
+    fontSize: 17,
     fontWeight: '600',
-    color: COLORS.navy,
+    color: COLORS.ink,
     textAlign: 'center',
+    letterSpacing: -0.3,
   },
   resultsBody: {
-    marginTop: 6,
-    fontSize: 14,
-    color: COLORS.muted,
-    textAlign: 'center',
-    lineHeight: 20,
-  },
-  resultsSection: {
-    marginTop: 20,
-    fontSize: 14,
-    fontWeight: '600',
-    color: COLORS.navy,
-  },
-  resultsCard: {
-    marginTop: 12,
-    padding: 14,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: '#E5ECF6',
-    backgroundColor: '#FFFFFF',
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-  },
-  resultsBadge: {
-    width: 10,
-    height: 40,
-    borderRadius: 6,
-    backgroundColor: '#F87171',
-  },
-  resultsBadgeWarm: {
-    backgroundColor: '#FBBF24',
-  },
-  resultsBadgeCool: {
-    backgroundColor: '#34D399',
-  },
-  resultsCardText: {
-    flex: 1,
-    fontSize: 14,
-    color: COLORS.ink,
-    lineHeight: 20,
-  },
-  ackWrap: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 24,
-  },
-  ackIconWrap: {
-    width: 120,
-    height: 120,
-    borderRadius: 60,
-    backgroundColor: COLORS.skySoft,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 24,
-  },
-  ackIcon: {
-    fontSize: 40,
-  },
-  ackTitle: {
-    fontSize: 22,
-    fontWeight: '700',
-    color: COLORS.navy,
-    textAlign: 'center',
-    marginBottom: 8,
-  },
-  ackBody: {
+    marginTop: 8,
     fontSize: 15,
     color: COLORS.muted,
     textAlign: 'center',
     lineHeight: 22,
   },
+  resultsSection: {
+    marginTop: 24,
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#4A6CF7',
+    letterSpacing: 1.2,
+    textTransform: 'uppercase',
+  },
+  resultsCard: {
+    marginTop: 14,
+    padding: 16,
+    borderRadius: 18,
+    borderWidth: 0,
+    borderColor: 'transparent',
+    backgroundColor: COLORS.white,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 14,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.04,
+    shadowRadius: 8,
+    elevation: 2,
+  },
+  resultsBadge: {
+    width: 4,
+    height: 36,
+    borderRadius: 2,
+    backgroundColor: '#4A6CF7',
+  },
+  resultsBadgeWarm: {
+    backgroundColor: COLORS.gold,
+  },
+  resultsBadgeCool: {
+    backgroundColor: COLORS.sage,
+  },
+  resultsCardText: {
+    flex: 1,
+    fontSize: 14,
+    color: COLORS.ink,
+    lineHeight: 21,
+  },
+  ackWrap: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 28,
+    paddingBottom: 120,
+  },
+  ackIconWrap: {
+    width: 100,
+    height: 100,
+    borderRadius: 50,
+    backgroundColor: COLORS.warmGray,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 28,
+  },
+  ackIcon: {
+    fontSize: 38,
+  },
+  ackMascotImage: {
+    width: 220,
+    height: 220,
+    resizeMode: 'contain',
+    marginBottom: 28,
+  },
+  ackTitle: {
+    fontSize: 26,
+    fontWeight: '800',
+    color: '#4A6CF7',
+    textAlign: 'center',
+    marginBottom: 10,
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
+  },
+  ackBody: {
+    fontSize: 16,
+    color: COLORS.muted,
+    textAlign: 'center',
+    lineHeight: 26,
+    fontFamily: Platform.OS === 'ios' ? 'Helvetica Neue' : 'sans-serif',
+  },
   ratingWrap: {
-    marginTop: 10,
+    marginTop: 16,
     alignItems: 'center',
   },
   ratingStars: {
-    fontSize: 18,
-    color: '#FACC15',
-    marginBottom: 12,
+    fontSize: 20,
+    color: COLORS.gold,
+    marginBottom: 14,
+    letterSpacing: 4,
   },
   ratingTitle: {
-    fontSize: 24,
-    fontWeight: '700',
+    fontSize: 26,
+    fontWeight: '800',
     color: '#FFFFFF',
     textAlign: 'center',
     marginBottom: 8,
+    letterSpacing: -0.5,
   },
   ratingBody: {
-    fontSize: 14,
-    color: 'rgba(255,255,255,0.75)',
+    fontSize: 15,
+    color: 'rgba(255,255,255,0.65)',
     textAlign: 'center',
-    lineHeight: 20,
-    marginBottom: 16,
+    lineHeight: 24,
+    marginBottom: 20,
+    fontFamily: Platform.OS === 'ios' ? 'Helvetica Neue' : 'sans-serif',
   },
   ratingBadgeRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
-    marginBottom: 18,
+    marginBottom: 22,
   },
   ratingAvatarGroup: {
     flexDirection: 'row',
@@ -1487,168 +1826,186 @@ const styles = StyleSheet.create({
     width: 28,
     height: 28,
     borderRadius: 14,
-    backgroundColor: '#D1E5FF',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.6)',
+    backgroundColor: 'rgba(232,115,74,0.3)',
+    borderWidth: 1.5,
+    borderColor: 'rgba(255,255,255,0.4)',
   },
   ratingAvatarOverlap: {
     marginLeft: -10,
   },
   ratingSocial: {
     fontSize: 12,
-    color: 'rgba(255,255,255,0.7)',
+    color: 'rgba(255,255,255,0.6)',
+    fontWeight: '500',
   },
   ratingCard: {
     width: '100%',
-    borderRadius: 16,
-    backgroundColor: 'rgba(255,255,255,0.12)',
-    padding: 14,
+    borderRadius: 20,
+    backgroundColor: 'rgba(255,255,255,0.08)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.08)',
+    padding: 16,
     marginBottom: 12,
   },
   ratingCardHeader: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginBottom: 8,
+    marginBottom: 10,
   },
   ratingCardStars: {
-    fontSize: 12,
-    color: '#FACC15',
+    fontSize: 11,
+    color: COLORS.gold,
+    letterSpacing: 2,
   },
   ratingCardName: {
     fontSize: 12,
-    color: 'rgba(255,255,255,0.8)',
+    color: 'rgba(255,255,255,0.7)',
     fontWeight: '600',
   },
   ratingCardText: {
-    fontSize: 13,
-    color: 'rgba(255,255,255,0.75)',
-    lineHeight: 18,
+    fontSize: 14,
+    color: 'rgba(255,255,255,0.65)',
+    lineHeight: 20,
+    fontStyle: 'italic',
   },
   commitmentWrap: {
-    marginTop: 10,
+    marginTop: 16,
   },
   commitmentTitle: {
-    fontSize: 24,
-    fontWeight: '700',
+    fontSize: 28,
+    fontWeight: '800',
     color: '#FFFFFF',
-    marginBottom: 6,
+    marginBottom: 8,
+    letterSpacing: -0.5,
   },
   commitmentBody: {
-    fontSize: 14,
-    color: 'rgba(255,255,255,0.75)',
-    marginBottom: 16,
+    fontSize: 15,
+    color: 'rgba(255,255,255,0.6)',
+    marginBottom: 20,
+    fontFamily: Platform.OS === 'ios' ? 'Helvetica Neue' : 'sans-serif',
   },
   commitmentList: {
-    gap: 12,
-    marginBottom: 20,
+    gap: 14,
+    marginBottom: 24,
   },
   commitmentRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
+    gap: 12,
   },
   commitmentCheck: {
-    width: 22,
-    height: 22,
-    borderRadius: 11,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.7)',
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    borderWidth: 1.5,
+    borderColor: '#4A6CF7',
+    backgroundColor: 'rgba(74,108,247,0.12)',
     alignItems: 'center',
     justifyContent: 'center',
   },
   commitmentCheckText: {
-    color: '#FFFFFF',
+    color: '#4A6CF7',
     fontSize: 12,
+    fontWeight: '700',
   },
   commitmentText: {
-    fontSize: 14,
-    color: 'rgba(255,255,255,0.85)',
+    fontSize: 15,
+    color: 'rgba(255,255,255,0.8)',
     flex: 1,
+    lineHeight: 22,
   },
   signatureCard: {
-    borderRadius: 18,
+    borderRadius: 22,
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.2)',
-    backgroundColor: 'rgba(255,255,255,0.08)',
-    padding: 20,
+    borderColor: 'rgba(255,255,255,0.1)',
+    backgroundColor: 'rgba(255,255,255,0.05)',
+    padding: 24,
     alignItems: 'center',
   },
   signatureLine: {
     width: '80%',
-    height: 2,
-    backgroundColor: 'rgba(255,255,255,0.6)',
+    height: 1.5,
+    backgroundColor: 'rgba(255,255,255,0.4)',
     borderRadius: 999,
-    marginBottom: 12,
+    marginBottom: 14,
   },
   signatureLineShort: {
     width: '55%',
-    opacity: 0.6,
+    opacity: 0.5,
   },
   signatureHint: {
     fontSize: 12,
-    color: 'rgba(255,255,255,0.6)',
+    color: 'rgba(255,255,255,0.4)',
+    letterSpacing: 0.5,
   },
   motivationWrap: {
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingHorizontal: 20,
+    paddingHorizontal: 28,
   },
   motivationTitle: {
-    fontSize: 28,
-    fontWeight: '600',
+    fontSize: 30,
+    fontWeight: '800',
     color: '#FFFFFF',
     textAlign: 'center',
+    letterSpacing: -0.6,
+    lineHeight: 40,
   },
   motivationHint: {
-    marginTop: 16,
+    marginTop: 20,
     fontSize: 12,
-    color: 'rgba(255,255,255,0.5)',
+    color: 'rgba(255,255,255,0.35)',
+    letterSpacing: 0.5,
   },
   accessWrap: {
-    marginTop: 8,
+    marginTop: 16,
   },
   accessTitle: {
-    fontSize: 22,
-    fontWeight: '700',
+    fontSize: 26,
+    fontWeight: '800',
     color: '#FFFFFF',
-    marginBottom: 14,
+    marginBottom: 18,
+    letterSpacing: -0.5,
   },
   accessGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: 12,
-    marginBottom: 16,
+    gap: 10,
+    marginBottom: 20,
   },
   accessTile: {
     width: '47%',
-    borderRadius: 14,
+    borderRadius: 18,
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.2)',
-    backgroundColor: 'rgba(255,255,255,0.08)',
-    padding: 12,
+    borderColor: 'rgba(255,255,255,0.08)',
+    backgroundColor: 'rgba(255,255,255,0.06)',
+    padding: 14,
   },
   accessTileIcon: {
     fontSize: 14,
-    color: '#FACC15',
-    marginBottom: 8,
+    color: '#4A6CF7',
+    marginBottom: 10,
   },
   accessTileText: {
-    fontSize: 12,
-    color: 'rgba(255,255,255,0.8)',
-    lineHeight: 16,
+    fontSize: 13,
+    color: 'rgba(255,255,255,0.75)',
+    lineHeight: 18,
+    fontWeight: '500',
   },
   accessTestimonial: {
-    borderRadius: 16,
-    backgroundColor: 'rgba(255,255,255,0.12)',
-    padding: 14,
+    borderRadius: 20,
+    backgroundColor: 'rgba(255,255,255,0.08)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.06)',
+    padding: 16,
   },
   accessTestimonialHeader: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    marginBottom: 8,
+    marginBottom: 10,
   },
   accessTestimonialName: {
     color: '#FFFFFF',
@@ -1657,114 +2014,126 @@ const styles = StyleSheet.create({
   },
   accessTestimonialStars: {
     marginLeft: 'auto',
-    fontSize: 12,
-    color: '#FACC15',
+    fontSize: 11,
+    color: COLORS.gold,
+    letterSpacing: 2,
   },
   accessTestimonialBody: {
-    fontSize: 13,
-    color: 'rgba(255,255,255,0.75)',
-    lineHeight: 18,
+    fontSize: 14,
+    color: 'rgba(255,255,255,0.65)',
+    lineHeight: 20,
+    fontStyle: 'italic',
   },
   transformationWrap: {
-    marginTop: 10,
+    marginTop: 16,
     alignItems: 'center',
   },
   transformationTitle: {
-    fontSize: 20,
-    fontWeight: '600',
+    fontSize: 24,
+    fontWeight: '700',
     color: '#FFFFFF',
     textAlign: 'center',
-    marginBottom: 16,
+    marginBottom: 20,
+    lineHeight: 34,
+    letterSpacing: -0.3,
+    fontStyle: 'italic',
   },
   transformationTag: {
-    marginTop: 16,
-    fontSize: 12,
-    letterSpacing: 1.2,
-    color: 'rgba(255,255,255,0.7)',
-    fontWeight: '600',
+    marginTop: 20,
+    fontSize: 11,
+    letterSpacing: 2.5,
+    color: '#4A6CF7',
+    fontWeight: '700',
   },
   transformationDate: {
     marginTop: 8,
-    fontSize: 14,
-    color: '#FFFFFF',
-    fontWeight: '600',
+    fontSize: 15,
+    color: 'rgba(255,255,255,0.8)',
+    fontWeight: '500',
   },
   transformationFootnote: {
-    marginTop: 18,
-    borderRadius: 14,
+    marginTop: 22,
+    borderRadius: 16,
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.2)',
-    paddingVertical: 10,
-    paddingHorizontal: 16,
+    borderColor: 'rgba(255,255,255,0.1)',
+    backgroundColor: 'rgba(255,255,255,0.05)',
+    paddingVertical: 12,
+    paddingHorizontal: 18,
   },
   transformationFootnoteText: {
-    color: 'rgba(255,255,255,0.7)',
-    fontSize: 12,
+    color: 'rgba(255,255,255,0.6)',
+    fontSize: 13,
+    fontWeight: '500',
   },
   paywallWrap: {
-    marginTop: 8,
+    marginTop: 16,
   },
   paywallHeader: {
-    marginBottom: 16,
+    marginBottom: 20,
   },
   paywallTitle: {
-    fontSize: 22,
-    fontWeight: '700',
+    fontSize: 28,
+    fontWeight: '800',
     color: '#FFFFFF',
+    letterSpacing: -0.5,
   },
   paywallSubtitle: {
-    marginTop: 6,
-    fontSize: 12,
-    color: 'rgba(255,255,255,0.7)',
+    marginTop: 8,
+    fontSize: 13,
+    color: '#4A6CF7',
+    fontWeight: '600',
+    letterSpacing: 0.3,
   },
   paywallBenefits: {
-    borderRadius: 16,
-    backgroundColor: 'rgba(255,255,255,0.1)',
-    padding: 14,
-    marginBottom: 16,
+    borderRadius: 20,
+    backgroundColor: 'rgba(255,255,255,0.06)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.06)',
+    padding: 16,
+    marginBottom: 20,
   },
   paywallBenefitTitle: {
-    fontSize: 14,
-    fontWeight: '600',
+    fontSize: 15,
+    fontWeight: '700',
     color: '#FFFFFF',
     marginBottom: 6,
   },
   paywallBenefitBody: {
-    fontSize: 13,
-    color: 'rgba(255,255,255,0.75)',
-    lineHeight: 18,
+    fontSize: 14,
+    color: 'rgba(255,255,255,0.6)',
+    lineHeight: 20,
   },
   paywallError: {
-    marginBottom: 10,
+    marginBottom: 12,
     color: '#FCA5A5',
-    fontSize: 12,
+    fontSize: 13,
   },
   paywallPlanList: {
     gap: 12,
-    marginBottom: 14,
+    marginBottom: 16,
   },
   paywallPlanCard: {
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.2)',
-    backgroundColor: 'rgba(255,255,255,0.05)',
-    padding: 14,
+    borderRadius: 20,
+    borderWidth: 1.5,
+    borderColor: 'rgba(255,255,255,0.1)',
+    backgroundColor: 'rgba(255,255,255,0.04)',
+    padding: 16,
   },
   paywallPlanCardActive: {
-    borderColor: '#FFFFFF',
-    backgroundColor: 'rgba(255,255,255,0.14)',
+    borderColor: '#4A6CF7',
+    backgroundColor: 'rgba(74,108,247,0.08)',
   },
   paywallPlanRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
+    gap: 14,
   },
   paywallPlanRadio: {
-    width: 18,
-    height: 18,
-    borderRadius: 9,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.7)',
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    borderWidth: 1.5,
+    borderColor: 'rgba(255,255,255,0.5)',
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -1772,33 +2141,34 @@ const styles = StyleSheet.create({
     width: 10,
     height: 10,
     borderRadius: 5,
-    backgroundColor: '#FFFFFF',
+    backgroundColor: '#4A6CF7',
   },
   paywallPlanCopy: {
     flex: 1,
   },
   paywallPlanTitle: {
-    fontSize: 14,
-    fontWeight: '600',
+    fontSize: 15,
+    fontWeight: '700',
     color: '#FFFFFF',
   },
   paywallPlanSub: {
-    marginTop: 2,
+    marginTop: 3,
     fontSize: 12,
-    color: 'rgba(255,255,255,0.6)',
+    color: 'rgba(255,255,255,0.5)',
   },
   paywallPlanPriceBlock: {
     alignItems: 'flex-end',
   },
   paywallPlanPrice: {
-    fontSize: 16,
-    fontWeight: '700',
+    fontSize: 18,
+    fontWeight: '800',
     color: '#FFFFFF',
   },
   paywallPlanNote: {
-    marginTop: 2,
+    marginTop: 3,
     fontSize: 11,
-    color: 'rgba(255,255,255,0.6)',
+    color: '#4A6CF7',
+    fontWeight: '600',
   },
   paywallFootnoteRow: {
     flexDirection: 'row',
@@ -1806,203 +2176,230 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   paywallFootnoteDot: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-    backgroundColor: '#22C55E',
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: COLORS.sage,
   },
   paywallFootnoteText: {
     fontSize: 12,
-    color: 'rgba(255,255,255,0.7)',
+    color: 'rgba(255,255,255,0.6)',
   },
   skipQuizButton: {
     alignSelf: 'center',
-    marginTop: 24,
+    marginTop: 28,
+    paddingVertical: 6,
+    paddingHorizontal: 16,
   },
   skipQuizText: {
-    fontSize: 12,
+    fontSize: 13,
     color: COLORS.muted,
+    fontWeight: '500',
   },
   formWrap: {
-    marginTop: 16,
+    marginTop: 24,
   },
   formTitle: {
-    fontSize: 20,
-    fontWeight: '700',
+    fontSize: 26,
+    fontWeight: '800',
     color: COLORS.ink,
-    marginBottom: 12,
+    marginBottom: 16,
+    letterSpacing: -0.5,
   },
   textField: {
     borderWidth: 1,
-    borderColor: '#E5ECF6',
-    borderRadius: 16,
-    paddingHorizontal: 16,
-    paddingVertical: 14,
+    borderColor: COLORS.softBorder,
+    borderRadius: 18,
+    paddingHorizontal: 18,
+    paddingVertical: 16,
     fontSize: 16,
     color: COLORS.ink,
+    backgroundColor: COLORS.white,
   },
   budgetField: {
     flexDirection: 'row',
     alignItems: 'center',
     borderWidth: 1,
-    borderColor: '#E5ECF6',
-    borderRadius: 16,
-    paddingHorizontal: 16,
-    paddingVertical: 10,
+    borderColor: COLORS.softBorder,
+    borderRadius: 18,
+    paddingHorizontal: 18,
+    paddingVertical: 14,
+    backgroundColor: COLORS.white,
   },
   budgetCurrency: {
-    fontSize: 24,
-    fontWeight: '700',
-    color: COLORS.navy,
+    fontSize: 28,
+    fontWeight: '800',
+    color: '#4A6CF7',
     marginRight: 8,
   },
   budgetInput: {
-    fontSize: 22,
-    fontWeight: '700',
+    fontSize: 26,
+    fontWeight: '800',
     color: COLORS.ink,
     flex: 1,
+    letterSpacing: -0.5,
   },
   formHint: {
-    marginTop: 10,
+    marginTop: 12,
     fontSize: 13,
     color: COLORS.muted,
-    lineHeight: 18,
+    lineHeight: 20,
+    fontFamily: Platform.OS === 'ios' ? 'Helvetica Neue' : 'sans-serif',
   },
   authWrap: {
-    marginTop: 12,
+    marginTop: 20,
   },
   authTitle: {
-    fontSize: 22,
-    fontWeight: '700',
+    fontSize: 26,
+    fontWeight: '800',
     color: COLORS.ink,
-    marginBottom: 6,
+    marginBottom: 8,
+    letterSpacing: -0.5,
   },
   authBody: {
-    fontSize: 14,
+    fontSize: 15,
     color: COLORS.muted,
-    marginBottom: 16,
+    marginBottom: 20,
+    fontFamily: Platform.OS === 'ios' ? 'Helvetica Neue' : 'sans-serif',
   },
   authFieldGroup: {
-    marginBottom: 12,
+    marginBottom: 14,
   },
   authLabel: {
     fontSize: 12,
-    color: COLORS.navy,
-    fontWeight: '600',
-    marginBottom: 6,
+    color: COLORS.ink,
+    fontWeight: '700',
+    marginBottom: 8,
+    letterSpacing: 0.3,
+    textTransform: 'uppercase',
   },
   authInput: {
     borderWidth: 1,
-    borderColor: '#E5ECF6',
-    borderRadius: 14,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    fontSize: 14,
+    borderColor: COLORS.softBorder,
+    borderRadius: 16,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    fontSize: 15,
     color: COLORS.ink,
+    backgroundColor: COLORS.white,
   },
   authError: {
-    fontSize: 12,
-    color: '#B91C1C',
-    marginBottom: 10,
+    fontSize: 13,
+    color: '#E53E3E',
+    marginBottom: 12,
   },
   authActions: {
-    gap: 10,
-    marginTop: 6,
+    gap: 12,
+    marginTop: 8,
   },
   authSecondaryButton: {
-    borderRadius: 14,
-    paddingVertical: 12,
+    borderRadius: 16,
+    paddingVertical: 14,
     alignItems: 'center',
     borderWidth: 1,
-    borderColor: '#E5ECF6',
-    backgroundColor: '#FFFFFF',
+    borderColor: COLORS.softBorder,
+    backgroundColor: COLORS.white,
   },
   authSecondaryButtonText: {
     color: COLORS.ink,
     fontWeight: '600',
-    fontSize: 14,
+    fontSize: 15,
   },
   authPrimaryButton: {
-    borderRadius: 14,
-    paddingVertical: 12,
+    borderRadius: 16,
+    paddingVertical: 14,
     alignItems: 'center',
-    backgroundColor: COLORS.navy,
+    backgroundColor: COLORS.ink,
   },
   authPrimaryButtonText: {
     color: '#FFFFFF',
     fontWeight: '600',
-    fontSize: 14,
+    fontSize: 15,
   },
   authLinkButton: {
     alignItems: 'center',
-    paddingVertical: 4,
+    paddingVertical: 6,
   },
   authLinkText: {
-    fontSize: 12,
-    color: COLORS.navy,
+    fontSize: 13,
+    color: '#4A6CF7',
     fontWeight: '600',
   },
   authButtonDisabled: {
-    opacity: 0.6,
+    opacity: 0.5,
   },
   helpWrap: {
-    marginTop: 16,
+    marginTop: 24,
     alignItems: 'center',
   },
   helpTitle: {
-    fontSize: 20,
-    fontWeight: '700',
-    color: COLORS.navy,
+    fontSize: 22,
+    fontWeight: '800',
+    color: COLORS.ink,
     textAlign: 'center',
-    marginBottom: 8,
+    marginBottom: 10,
+    letterSpacing: -0.4,
   },
   helpBody: {
-    fontSize: 14,
+    fontSize: 15,
     color: COLORS.muted,
     textAlign: 'center',
-    lineHeight: 20,
+    lineHeight: 24,
+    fontFamily: Platform.OS === 'ios' ? 'Helvetica Neue' : 'sans-serif',
   },
   permissionWrap: {
-    marginTop: 12,
+    marginTop: 20,
   },
   permissionCard: {
-    marginTop: 16,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: '#E5ECF6',
-    padding: 16,
-    backgroundColor: '#FFFFFF',
+    marginTop: 20,
+    borderRadius: 20,
+    borderWidth: 0,
+    borderColor: 'transparent',
+    padding: 20,
+    backgroundColor: COLORS.white,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.04,
+    shadowRadius: 8,
+    elevation: 2,
   },
   permissionTitle: {
-    fontSize: 16,
-    fontWeight: '600',
+    fontSize: 17,
+    fontWeight: '700',
     color: COLORS.ink,
     marginBottom: 8,
   },
   permissionBody: {
-    fontSize: 13,
+    fontSize: 14,
     color: COLORS.muted,
-    lineHeight: 18,
-    marginBottom: 12,
+    lineHeight: 22,
+    marginBottom: 16,
+    fontFamily: Platform.OS === 'ios' ? 'Helvetica Neue' : 'sans-serif',
   },
   permissionButton: {
-    backgroundColor: COLORS.navy,
-    borderRadius: 12,
-    paddingVertical: 10,
+    backgroundColor: COLORS.ink,
+    borderRadius: 14,
+    paddingVertical: 12,
     alignItems: 'center',
   },
   permissionButtonText: {
     color: '#FFFFFF',
     fontWeight: '600',
+    fontSize: 15,
   },
   notificationCard: {
-    marginTop: 16,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: '#E5ECF6',
-    padding: 16,
-    backgroundColor: '#FFFFFF',
-    gap: 14,
+    marginTop: 20,
+    borderRadius: 20,
+    borderWidth: 0,
+    borderColor: 'transparent',
+    padding: 20,
+    backgroundColor: COLORS.white,
+    gap: 16,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.04,
+    shadowRadius: 8,
+    elevation: 2,
   },
   notificationRow: {
     flexDirection: 'row',
@@ -2010,74 +2407,92 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
   },
   notificationText: {
-    fontSize: 14,
+    fontSize: 15,
     color: COLORS.ink,
+    fontWeight: '500',
   },
   consequenceWrap: {
-    marginTop: 18,
+    marginTop: 0,
     alignItems: 'center',
+    flex: 1,
+    justifyContent: 'center',
+    paddingBottom: 120,
+    paddingHorizontal: 28,
+  },
+  consequenceMascotImage: {
+    width: 220,
+    height: 220,
+    resizeMode: 'contain',
+    marginBottom: 28,
   },
   consequenceTitle: {
-    fontSize: 20,
-    fontWeight: '700',
-    color: COLORS.navy,
+    fontSize: 24,
+    fontWeight: '800',
+    color: '#4A6CF7',
     textAlign: 'center',
-    marginBottom: 8,
+    marginBottom: 10,
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
   },
   consequenceBody: {
-    fontSize: 14,
+    fontSize: 15,
     color: COLORS.muted,
     textAlign: 'center',
-    lineHeight: 20,
+    lineHeight: 24,
+    fontFamily: Platform.OS === 'ios' ? 'Helvetica Neue' : 'sans-serif',
   },
   questionWrap: {
-    marginTop: 24,
+    marginTop: 28,
   },
   questionLabel: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: COLORS.navy,
-    marginBottom: 8,
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#4A6CF7',
+    marginBottom: 10,
+    letterSpacing: 1.5,
+    textTransform: 'uppercase',
   },
   questionTitle: {
-    fontSize: 20,
-    fontWeight: '600',
+    fontSize: 24,
+    fontWeight: '700',
     color: COLORS.ink,
-    marginBottom: 20,
+    marginBottom: 24,
+    letterSpacing: -0.4,
+    lineHeight: 32,
   },
   optionList: {
-    gap: 12,
+    gap: 10,
   },
   optionRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 14,
+    paddingVertical: 15,
     paddingHorizontal: 16,
-    borderRadius: 16,
+    borderRadius: 18,
     borderWidth: 1,
-    borderColor: '#E5ECF6',
-    backgroundColor: '#FFFFFF',
+    borderColor: COLORS.softBorder,
+    backgroundColor: COLORS.white,
   },
   optionRowActive: {
-    borderColor: COLORS.navy,
-    backgroundColor: '#F1F6FF',
+    borderColor: '#4A6CF7',
+    backgroundColor: 'rgba(74,108,247,0.06)',
   },
   optionIndex: {
-    width: 26,
-    height: 26,
-    borderRadius: 13,
-    backgroundColor: COLORS.skySoft,
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: COLORS.warmGray,
     alignItems: 'center',
     justifyContent: 'center',
-    marginRight: 12,
+    marginRight: 14,
   },
   optionIndexActive: {
-    backgroundColor: COLORS.navy,
+    backgroundColor: '#4A6CF7',
   },
   optionIndexText: {
     fontSize: 12,
     fontWeight: '700',
-    color: COLORS.navy,
+    color: COLORS.ink,
   },
   optionIndexTextActive: {
     color: '#FFFFFF',
@@ -2085,17 +2500,18 @@ const styles = StyleSheet.create({
   optionText: {
     fontSize: 15,
     color: COLORS.ink,
+    fontWeight: '500',
   },
   optionTextActive: {
-    color: COLORS.navy,
+    color: COLORS.ink,
     fontWeight: '600',
   },
   wheelWrap: {
     height: 220,
-    borderRadius: 20,
+    borderRadius: 22,
     borderWidth: 1,
-    borderColor: '#E5ECF6',
-    backgroundColor: '#FFFFFF',
+    borderColor: COLORS.softBorder,
+    backgroundColor: COLORS.white,
     overflow: 'hidden',
     justifyContent: 'center',
   },
@@ -2117,17 +2533,36 @@ const styles = StyleSheet.create({
     right: 16,
     top: 88,
     height: 44,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: COLORS.navy,
-    backgroundColor: '#F1F6FF',
+    borderRadius: 14,
+    borderWidth: 1.5,
+    borderColor: '#4A6CF7',
+    backgroundColor: '#F0F3FE',
     alignItems: 'center',
     justifyContent: 'center',
+    pointerEvents: 'none',
   },
   wheelHighlightText: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: COLORS.navy,
+    fontSize: 17,
+    fontWeight: '700',
+    color: COLORS.ink,
+  },
+  bottomProgressTrack: {
+    height: 4,
+    borderRadius: 999,
+    backgroundColor: COLORS.softBorder,
+    overflow: 'hidden',
+    marginBottom: 16,
+  },
+  bottomProgressTrackDark: {
+    backgroundColor: 'rgba(255,255,255,0.15)',
+  },
+  bottomProgressFill: {
+    height: 4,
+    borderRadius: 999,
+    backgroundColor: '#4A6CF7',
+  },
+  bottomProgressFillDark: {
+    backgroundColor: '#7B9BFF',
   },
   bottomBar: {
     position: 'absolute',
@@ -2135,38 +2570,173 @@ const styles = StyleSheet.create({
     right: 0,
     bottom: 0,
     paddingHorizontal: 24,
-    paddingBottom: 24,
-    paddingTop: 12,
+    paddingBottom: 28,
+    paddingTop: 14,
     backgroundColor: 'transparent',
   },
   bottomBarDark: {
     backgroundColor: 'transparent',
   },
   primaryButton: {
-    height: 52,
-    borderRadius: 18,
-    backgroundColor: COLORS.navy,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: COLORS.ink,
     alignItems: 'center',
     justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.08,
+    shadowRadius: 12,
+    elevation: 4,
   },
   primaryButtonLight: {
-    backgroundColor: '#FFFFFF',
+    backgroundColor: '#4A6CF7',
+    shadowColor: '#4A6CF7',
+    shadowOpacity: 0.25,
   },
   primaryButtonWarm: {
-    backgroundColor: COLORS.navy,
+    backgroundColor: '#FFFFFF',
+    shadowColor: '#000',
+    shadowOpacity: 0.1,
   },
   primaryButtonDisabled: {
-    opacity: 0.5,
+    opacity: 0.4,
   },
   primaryButtonText: {
     color: '#FFFFFF',
     fontSize: 16,
-    fontWeight: '600',
+    fontWeight: '700',
+    letterSpacing: 0.2,
   },
   primaryButtonTextDark: {
-    color: COLORS.navy,
+    color: '#FFFFFF',
   },
   primaryButtonTextWarm: {
+    color: COLORS.navy,
+  },
+  consequencesCombinedWrap: {
+    alignItems: 'center',
+    paddingHorizontal: 20,
+    paddingTop: 8,
+  },
+  consequencesCombinedTitle: {
+    fontSize: 22,
+    fontWeight: '800',
+    color: COLORS.ink,
+    textAlign: 'center',
+    marginBottom: 20,
+  },
+  consequencesCombinedGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'space-between',
+    width: '100%',
+  },
+  consequenceCard: {
+    width: '48%',
+    backgroundColor: COLORS.cream,
+    borderRadius: 16,
+    padding: 14,
+    marginBottom: 12,
+    alignItems: 'center',
+  },
+  consequenceCardImage: {
+    width: 56,
+    height: 56,
+    resizeMode: 'contain',
+    marginBottom: 8,
+  },
+  consequenceCardTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: COLORS.ink,
+    textAlign: 'center',
+    marginBottom: 4,
+  },
+  consequenceCardBody: {
+    fontSize: 12,
+    color: COLORS.muted,
+    textAlign: 'center',
+    lineHeight: 16,
+  },
+  showcaseWrap: {
+    alignItems: 'center',
+    paddingHorizontal: 24,
+    paddingTop: 16,
+  },
+  showcaseImageWrap: {
+    width: 220,
+    height: 220,
+    borderRadius: 24,
+    backgroundColor: COLORS.cream,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 28,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.06,
+    shadowRadius: 12,
+    elevation: 3,
+  },
+  showcaseImage: {
+    width: 160,
+    height: 160,
+    resizeMode: 'contain',
+  },
+  showcaseTitle: {
+    fontSize: 24,
+    fontWeight: '800',
+    color: COLORS.ink,
+    textAlign: 'center',
+    marginBottom: 12,
+  },
+  showcaseBody: {
+    fontSize: 16,
+    color: COLORS.muted,
+    textAlign: 'center',
+    lineHeight: 24,
+    paddingHorizontal: 8,
+  },
+  preparingResultsText: {
+    marginTop: 24,
+    fontSize: 14,
+    color: COLORS.muted,
+    textAlign: 'center',
+    letterSpacing: 0.3,
+  },
+  affirmationCard: {
+    width: '100%',
+    borderRadius: 22,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.12)',
+    backgroundColor: 'rgba(255,255,255,0.06)',
+    marginTop: 20,
+    padding: 18,
+  },
+  affirmationLabel: {
+    fontSize: 13,
+    color: 'rgba(255,255,255,0.5)',
+    fontWeight: '600',
+    letterSpacing: 0.5,
+    marginBottom: 10,
+  },
+  affirmationInput: {
+    fontSize: 16,
     color: '#FFFFFF',
+    fontWeight: '500',
+    lineHeight: 24,
+    minHeight: 80,
+    textAlignVertical: 'top',
+  },
+  placeholderWrap: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 24,
+  },
+  placeholderText: {
+    fontSize: 18,
+    color: COLORS.muted,
+    fontWeight: '600',
   },
 });

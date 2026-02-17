@@ -29,6 +29,7 @@ import { RC_IOS_API_KEY } from '@env';
 import AuthScreen from './AuthScreen';
 import AccountScreen from './AccountScreen';
 import Onboarding from './Onboarding';
+import MainDashboard from './MainDashboard';
 import { supabase } from './supabaseClient';
 
 const REVENUECAT_IOS_API_KEY_PLACEHOLDER: string = 'REVENUECAT_IOS_PUBLIC_SDK_KEY';
@@ -39,6 +40,10 @@ function App() {
   const isDarkMode = useColorScheme() === 'dark';
   const [session, setSession] = useState<Session | null>(null);
   const [isAuthLoading, setIsAuthLoading] = useState(true);
+  const [showDashboardOverride, setShowDashboardOverride] = useState(false);
+  const [hadSessionOnLaunch, setHadSessionOnLaunch] = useState(false);
+  const [onboardingComplete, setOnboardingComplete] = useState(false);
+  const [pendingOverride, setPendingOverride] = useState(false);
 
   useEffect(() => {
     const configurePurchases = async () => {
@@ -68,7 +73,12 @@ function App() {
     const loadSession = async () => {
       const { data } = await supabase.auth.getSession();
       if (!isMounted) return;
-      setSession(data.session ?? null);
+      const existingSession = data.session ?? null;
+      setSession(existingSession);
+      if (existingSession) {
+        setHadSessionOnLaunch(true);
+        setOnboardingComplete(true);
+      }
       setIsAuthLoading(false);
     };
 
@@ -111,12 +121,59 @@ function App() {
 
   useEffect(() => {
     const handleUrl = async (url: string) => {
-      console.warn('OAuth callback url', url);
-      const { data, error } = await supabase.auth.exchangeCodeForSession(url);
-      if (error) {
-        console.warn('Supabase OAuth error', error.message);
-      } else {
-        console.warn('Supabase OAuth session', data?.session?.user?.email ?? 'no session');
+      // Handle quitbite://override deep link from shield extension
+      if (url.startsWith('quitbite://override')) {
+        setPendingOverride(true);
+        return;
+      }
+
+      try {
+        const queryPart = url.split('?')[1]?.split('#')[0] ?? '';
+        const queryParams = new Map(
+          queryPart
+            .split('&')
+            .filter(Boolean)
+            .map((pair) => {
+              const [k, v = ''] = pair.split('=');
+              return [decodeURIComponent(k), decodeURIComponent(v)] as const;
+            }),
+        );
+        const code = queryParams.get('code');
+
+        if (code) {
+          const { error } = await supabase.auth.exchangeCodeForSession(code);
+          if (error) {
+            console.warn('Supabase OAuth code exchange error', error.message);
+          }
+          return;
+        }
+
+        const hash = url.includes('#') ? url.split('#')[1] : '';
+        if (!hash) return;
+
+        const hashParams = new Map(
+          hash
+            .split('&')
+            .filter(Boolean)
+            .map((pair) => {
+              const [k, v = ''] = pair.split('=');
+              return [decodeURIComponent(k), decodeURIComponent(v)] as const;
+            }),
+        );
+        const accessToken = hashParams.get('access_token');
+        const refreshToken = hashParams.get('refresh_token');
+
+        if (accessToken && refreshToken) {
+          const { error } = await supabase.auth.setSession({
+            access_token: accessToken,
+            refresh_token: refreshToken,
+          });
+          if (error) {
+            console.warn('Supabase OAuth token session error', error.message);
+          }
+        }
+      } catch (error) {
+        console.warn('Failed to handle deep link URL', error);
       }
     };
 
@@ -140,7 +197,33 @@ function App() {
   return (
     <SafeAreaProvider>
       <StatusBar barStyle={isDarkMode ? 'light-content' : 'dark-content'} />
-      <Onboarding />
+      {isAuthLoading ? (
+        <View style={styles.centered}>
+          <ActivityIndicator />
+          <Text style={styles.mutedText}>Loading…</Text>
+        </View>
+      ) : (onboardingComplete || showDashboardOverride) && session ? (
+        <MainDashboard
+          email={session?.user?.email ?? null}
+          pendingOverride={pendingOverride}
+          onOverrideHandled={() => setPendingOverride(false)}
+          onReturnToWelcome={() => {
+            setOnboardingComplete(false);
+            setShowDashboardOverride(false);
+          }}
+          onSignOut={() => {
+            setOnboardingComplete(false);
+            setHadSessionOnLaunch(false);
+            setShowDashboardOverride(false);
+            supabase.auth.signOut();
+          }}
+        />
+      ) : (
+        <Onboarding
+          onSkipToDashboard={() => setShowDashboardOverride(true)}
+          onOnboardingComplete={() => setOnboardingComplete(true)}
+        />
+      )}
     </SafeAreaProvider>
   );
 }
@@ -164,37 +247,52 @@ function AppContent({
   const [showAccount, setShowAccount] = useState(false);
   const isPurchaseDisabled = isPurchasing || isPro;
 
-  const syncProfileSubscription = async (info: any) => {
+  const syncProfileSubscription = async (info: any, purchasedPkg?: any) => {
     if (!userId) return;
     const entitlement = (info as any)?.entitlements?.active?.[PRO_ENTITLEMENT_ID];
-    const productIdentifier = entitlement?.productIdentifier ?? null;
+
+    let productId: string | null = null;
     let subscriptionName: string | null = null;
     let subscriptionPrice: string | null = null;
 
-    if (entitlement && productIdentifier) {
-      try {
-        const products = await Purchases.getProducts([productIdentifier]);
-        const product = products?.[0];
-        subscriptionName = product?.title ?? null;
-        subscriptionPrice = product?.priceString ?? null;
-      } catch {
-        const matchedPackage = packages.find((pkg) => pkg?.product?.identifier === productIdentifier);
-        subscriptionName = matchedPackage?.product?.title ?? null;
-        subscriptionPrice = matchedPackage?.product?.priceString ?? null;
+    if (purchasedPkg?.product) {
+      // Use the actual package the user tapped — this is always correct
+      productId = purchasedPkg.product.identifier ?? null;
+      subscriptionName = purchasedPkg.product.title ?? null;
+      subscriptionPrice = purchasedPkg.product.priceString ?? null;
+    } else {
+      // Restore / initial load — no package available, fall back to entitlement
+      productId = entitlement?.productIdentifier ?? null;
+      if (productId) {
+        try {
+          const products = await Purchases.getProducts([productId]);
+          const product = products?.[0];
+          subscriptionName = product?.title ?? null;
+          subscriptionPrice = product?.priceString ?? null;
+        } catch {
+          const matchedPackage = packages.find((p) => p?.product?.identifier === productId);
+          subscriptionName = matchedPackage?.product?.title ?? null;
+          subscriptionPrice = matchedPackage?.product?.priceString ?? null;
+        }
       }
     }
+
     await supabase
-      .from('profiles')
-      .update({
-        rc_customer_id: (info as any)?.originalAppUserId ?? null,
-        rc_app_user_id: (info as any)?.appUserId ?? null,
-        rc_entitlement_active: Boolean(entitlement),
-        rc_entitlement_id: entitlement ? PRO_ENTITLEMENT_ID : null,
-        rc_subscription_name: subscriptionName,
-        rc_subscription_price: subscriptionPrice,
-        rc_last_event_at: new Date().toISOString(),
-      })
-      .eq('id', userId);
+      .from('subscriptions')
+      .upsert(
+        {
+          user_id: userId,
+          rc_customer_id: (info as any)?.originalAppUserId ?? null,
+          rc_app_user_id: (info as any)?.appUserId ?? null,
+          rc_entitlement_active: Boolean(entitlement),
+          rc_entitlement_id: entitlement ? PRO_ENTITLEMENT_ID : null,
+          rc_product_id: productId,
+          rc_subscription_name: subscriptionName,
+          rc_subscription_price: subscriptionPrice,
+          rc_last_event_at: new Date().toISOString(),
+        },
+        { onConflict: 'user_id' },
+      );
   };
 
   const loadOfferings = async () => {
@@ -231,7 +329,7 @@ function AppContent({
       const info = (result as any)?.customerInfo ?? (await Purchases.getCustomerInfo());
       setCustomerInfo(info);
       setIsPro(Boolean((info as any)?.entitlements?.active?.[PRO_ENTITLEMENT_ID]));
-      await syncProfileSubscription(info);
+      await syncProfileSubscription(info, pkg);
     } catch (e: any) {
       if (e?.userCancelled) {
         return;

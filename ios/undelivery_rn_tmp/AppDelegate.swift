@@ -21,6 +21,10 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     reactNativeDelegate = delegate
     reactNativeFactory = factory
 
+    if #available(iOS 16.0, *) {
+      ScreenTimeManager.loadPersistedSelection()
+    }
+
     window = UIWindow(frame: UIScreen.main.bounds)
 
     factory.startReactNative(
