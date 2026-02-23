@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   AppState,
   Alert,
+  ImageBackground,
+  Modal,
   NativeModules,
   Pressable,
   SafeAreaView,
@@ -12,10 +14,13 @@ import {
   View,
   Switch,
 } from 'react-native';
+import Purchases from 'react-native-purchases';
+import Svg, { Circle, Path } from 'react-native-svg';
 import ScreenTimeTest from './ScreenTimeTest';
 import OverrideFlow from './OverrideFlow';
 import { blockingService, type BlockType, type BlockMode, type BlockingSettings, type BlockState, type ScheduleConfig, type PerModeCooldown } from './BlockingService';
-import { loadDashboardData, addOrder as addOrderToDb, deleteOrder as deleteOrderFromDb, updateBudget, updateBlockingSettings, updateProfile, type Order as DbOrder } from './DataService';
+import { loadDashboardData, getSubscription, addOrder as addOrderToDb, deleteOrder as deleteOrderFromDb, updateBudget, updateBlockingSettings, updateProfile, type Order as DbOrder } from './DataService';
+import { supabase } from './supabaseClient';
 
 const COLORS = {
   ink: '#1A1A2E',
@@ -81,6 +86,73 @@ const MODE_LABELS: Record<BlockMode, { label: string; emoji: string; desc: strin
 
 type TabKey = 'home' | 'orders' | 'reports' | 'bridge' | 'settings';
 type SheetKey = 'budget' | 'blocker' | 'opportunity' | 'reminders' | null;
+const PRO_ENTITLEMENT_ID = 'undelivery Pro';
+
+const NavIcon = ({ tab, color }: { tab: TabKey; color: string }) => {
+  if (tab === 'home') {
+    return (
+      <Svg width={22} height={22} viewBox="0 0 24 24" fill="none">
+        <Path
+          d="M2.36407 12.9579C1.98463 10.3208 1.79491 9.00229 2.33537 7.87495C2.87583 6.7476 4.02619 6.06234 6.32691 4.69181L7.71175 3.86687C9.80104 2.62229 10.8457 2 12 2C13.1543 2 14.199 2.62229 16.2882 3.86687L17.6731 4.69181C19.9738 6.06234 21.1242 6.7476 21.6646 7.87495C22.2051 9.00229 22.0154 10.3208 21.6359 12.9579L21.3572 14.8952C20.8697 18.2827 20.626 19.9764 19.451 20.9882C18.2759 22 16.5526 22 13.1061 22H10.8939C7.44737 22 5.72409 22 4.54903 20.9882C3.37396 19.9764 3.13025 18.2827 2.64284 14.8952L2.36407 12.9579Z"
+          stroke={color}
+          strokeWidth={1.6}
+        />
+        <Path d="M15 18H9" stroke={color} strokeWidth={1.6} strokeLinecap="round" />
+      </Svg>
+    );
+  }
+
+  if (tab === 'orders') {
+    return (
+      <Svg width={22} height={22} viewBox="0 0 24 24" fill="none">
+        <Path d="M7.5 18C8.32843 18 9 18.6716 9 19.5C9 20.3284 8.32843 21 7.5 21C6.67157 21 6 20.3284 6 19.5C6 18.6716 6.67157 18 7.5 18Z" stroke={color} strokeWidth={1.5} />
+        <Path d="M16.5 18.0001C17.3284 18.0001 18 18.6716 18 19.5001C18 20.3285 17.3284 21.0001 16.5 21.0001C15.6716 21.0001 15 20.3285 15 19.5001C15 18.6716 15.6716 18.0001 16.5 18.0001Z" stroke={color} strokeWidth={1.5} />
+        <Path d="M2 3L2.26121 3.09184C3.5628 3.54945 4.2136 3.77826 4.58584 4.32298C4.95808 4.86771 4.95808 5.59126 4.95808 7.03836V9.76C4.95808 12.7016 5.02132 13.6723 5.88772 14.5862C6.75412 15.5 8.14857 15.5 10.9375 15.5H12M16.2404 15.5C17.8014 15.5 18.5819 15.5 19.1336 15.0504C19.6853 14.6008 19.8429 13.8364 20.158 12.3075L20.6578 9.88275C21.0049 8.14369 21.1784 7.27417 20.7345 6.69708C20.2906 6.12 18.7738 6.12 17.0888 6.12H11.0235M4.95808 6.12H7" stroke={color} strokeWidth={1.5} strokeLinecap="round" />
+      </Svg>
+    );
+  }
+
+  if (tab === 'reports') {
+    return (
+      <Svg width={23} height={23} viewBox="-0.5 0 25 25" fill="none">
+        <Path d="M3.02 5.5H20.98C21.27 5.5 21.5 5.73 21.5 6.02V18.98C21.5 19.27 21.27 19.5 20.98 19.5H3.02C2.73 19.5 2.5 19.27 2.5 18.98V6.02C2.5 5.73 2.73 5.5 3.02 5.5Z" stroke={color} strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
+        <Path d="M12 8.25V10.25" stroke={color} strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
+        <Path d="M12 15.25V16.75" stroke={color} strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
+        <Path d="M17 8.25V8.95999" stroke={color} strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
+        <Path d="M7 11.25V16.75" stroke={color} strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
+        <Circle cx="7" cy="8.75" r="1" fill={color} />
+        <Circle cx="12" cy="12.75" r="1" fill={color} />
+        <Circle cx="17" cy="10.96" r="1" fill={color} />
+        <Path d="M17 12.96V16.75" stroke={color} strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
+      </Svg>
+    );
+  }
+
+  if (tab === 'bridge') {
+    return (
+      <Svg width={22} height={22} viewBox="0 0 24 24" fill="none">
+        <Path
+          d="M17 3.33782C15.5291 2.48697 13.8214 2 12 2C6.47715 2 2 6.47715 2 12C2 13.5997 2.37562 15.1116 3.04346 16.4525C3.22094 16.8088 3.28001 17.2161 3.17712 17.6006L2.58151 19.8267C2.32295 20.793 3.20701 21.677 4.17335 21.4185L6.39939 20.8229C6.78393 20.72 7.19121 20.7791 7.54753 20.9565C8.88837 21.6244 10.4003 22 12 22C17.5228 22 22 17.5228 22 12C22 10.1786 21.513 8.47087 20.6622 7"
+          stroke={color}
+          strokeWidth={1.6}
+          strokeLinecap="round"
+        />
+      </Svg>
+    );
+  }
+
+  return (
+    <Svg width={22} height={22} viewBox="0 0 24 24" fill="none">
+      <Circle cx="12" cy="12" r="3" stroke={color} strokeWidth={1.6} />
+      <Path
+        d="M3.66122 10.6392C4.13377 10.9361 4.43782 11.4419 4.43782 11.9999C4.43781 12.558 4.13376 13.0638 3.66122 13.3607C3.33966 13.5627 3.13248 13.7242 2.98508 13.9163C2.66217 14.3372 2.51966 14.869 2.5889 15.3949C2.64082 15.7893 2.87379 16.1928 3.33973 16.9999C3.80568 17.8069 4.03865 18.2104 4.35426 18.4526C4.77508 18.7755 5.30694 18.918 5.83284 18.8488C6.07287 18.8172 6.31628 18.7185 6.65196 18.5411C7.14544 18.2803 7.73558 18.2699 8.21895 18.549C8.70227 18.8281 8.98827 19.3443 9.00912 19.902C9.02332 20.2815 9.05958 20.5417 9.15224 20.7654C9.35523 21.2554 9.74458 21.6448 10.2346 21.8478C10.6022 22 11.0681 22 12 22C12.9319 22 13.3978 22 13.7654 21.8478C14.2554 21.6448 14.6448 21.2554 14.8478 20.7654C14.9404 20.5417 14.9767 20.2815 14.9909 19.9021C15.0117 19.3443 15.2977 18.8281 15.7811 18.549C16.2644 18.27 16.8545 18.2804 17.3479 18.5412C17.6837 18.7186 17.9271 18.8173 18.1671 18.8489C18.693 18.9182 19.2249 18.7756 19.6457 18.4527C19.9613 18.2106 20.1943 17.807 20.6603 17C20.8677 16.6407 21.029 16.3614 21.1486 16.1272M20.3387 13.3608C19.8662 13.0639 19.5622 12.5581 19.5621 12.0001C19.5621 11.442 19.8662 10.9361 20.3387 10.6392C20.6603 10.4372 20.8674 10.2757 21.0148 10.0836C21.3377 9.66278 21.4802 9.13092 21.411 8.60502C21.3591 8.2106 21.1261 7.80708 20.6601 7.00005C20.1942 6.19301 19.9612 5.7895 19.6456 5.54732C19.2248 5.22441 18.6929 5.0819 18.167 5.15113C17.927 5.18274 17.6836 5.2814 17.3479 5.45883C16.8544 5.71964 16.2643 5.73004 15.781 5.45096C15.2977 5.1719 15.0117 4.6557 14.9909 4.09803C14.9767 3.71852 14.9404 3.45835 14.8478 3.23463C14.6448 2.74458 14.2554 2.35523 13.7654 2.15224C13.3978 2 12.9319 2 12 2C11.0681 2 10.6022 2 10.2346 2.15224C9.74458 2.35523 9.35523 2.74458 9.15224 3.23463C9.05958 3.45833 9.02332 3.71848 9.00912 4.09794C8.98826 4.65566 8.70225 5.17191 8.21891 5.45096C7.73557 5.73002 7.14548 5.71959 6.65205 5.4588C6.31633 5.28136 6.0729 5.18269 5.83285 5.15108C5.30695 5.08185 4.77509 5.22436 4.35427 5.54727C4.03866 5.78945 3.80569 6.19297 3.33974 7C2.87379 7.80703 2.64082 8.21055 2.5889 8.60497C2.51966 9.13087 2.66217 9.66273 2.98508 10.0836C3.13248 10.2757 3.33965 10.4372 3.66122 10.6392Z"
+        stroke={color}
+        strokeWidth={1.4}
+        strokeLinecap="round"
+      />
+    </Svg>
+  );
+};
 
 type MainDashboardProps = {
   email: string | null;
@@ -110,6 +182,8 @@ const GOALS: Goal[] = [
   { id: 'goal-3', title: 'Fitness plan month', target: 70, unit: '$' },
 ];
 
+const DELIVERY_APPS = ['Uber Eats', 'Just Eat', 'DoorDash', 'Deliveroo', 'GrubHub', 'Postmates'] as const;
+
 export default function MainDashboard({
   email,
   pendingOverride,
@@ -129,22 +203,17 @@ export default function MainDashboard({
   const [isLoading, setIsLoading] = useState(true);
   const [newOrderVendor, setNewOrderVendor] = useState('');
   const [newOrderAmount, setNewOrderAmount] = useState('');
+  const [showAddOrderModal, setShowAddOrderModal] = useState(false);
+  const [showVendorMenu, setShowVendorMenu] = useState(false);
+  const [selectedAppLabels, setSelectedAppLabels] = useState<string[]>([]);
   const [budgetReminders, setBudgetReminders] = useState(true);
   const [cookingIdeas, setCookingIdeas] = useState(true);
   const [opportunityAmount, setOpportunityAmount] = useState('22');
-
-  useEffect(() => {
-    setActiveTab('home');
-  }, []);
-
-  useEffect(() => {
-    const subscription = AppState.addEventListener('change', (state) => {
-      if (state === 'active') {
-        setActiveTab('home');
-      }
-    });
-    return () => subscription.remove();
-  }, []);
+  const [subscriptionPlan, setSubscriptionPlan] = useState<'weekly' | 'monthly' | 'yearly' | 'none'>('none');
+  const [trialActive, setTrialActive] = useState(false);
+  const [subscriptionPeriodType, setSubscriptionPeriodType] = useState('unknown');
+  const [subscriptionExpiresAt, setSubscriptionExpiresAt] = useState<string | null>(null);
+  const [subscriptionWillRenew, setSubscriptionWillRenew] = useState<boolean | null>(null);
 
   const formatOrderDate = (iso: string) => {
     const d = new Date(iso);
@@ -167,6 +236,101 @@ export default function MainDashboard({
   );
   const remaining = Math.max(weeklyBudget - totalSpend, 0);
   const budgetProgress = Math.min(totalSpend / weeklyBudget, 1);
+
+  const getPlanFromProductId = (productId?: string | null): 'weekly' | 'monthly' | 'yearly' | 'none' => {
+    const id = String(productId ?? '').toLowerCase();
+    if (!id) return 'none';
+    if (id.includes('weekly')) return 'weekly';
+    if (id.includes('monthly')) return 'monthly';
+    if (id.includes('yearly') || id.includes('annual')) return 'yearly';
+    return 'none';
+  };
+
+  const applySubscriptionDebugState = (subscription: any) => {
+    const hasActiveEntitlement = Boolean(subscription?.rc_entitlement_active);
+    setSubscriptionPlan(hasActiveEntitlement ? getPlanFromProductId(subscription?.rc_product_id) : 'none');
+    const periodType = String(subscription?.rc_period_type ?? '').toLowerCase();
+    const subscriptionName = String(subscription?.rc_subscription_name ?? '').toLowerCase();
+    setTrialActive(Boolean(subscription?.rc_is_trial) || periodType === 'trial' || subscriptionName.includes('trial'));
+    setSubscriptionPeriodType(periodType || 'unknown');
+    setSubscriptionExpiresAt(subscription?.rc_expires_date ?? null);
+    setSubscriptionWillRenew(
+      typeof subscription?.rc_will_renew === 'boolean'
+        ? Boolean(subscription?.rc_will_renew)
+        : null,
+    );
+  };
+
+  const refreshSubscriptionFromRevenueCat = useCallback(async () => {
+    const { data, error } = await supabase.auth.getUser();
+    const userId = data?.user?.id;
+    if (error || !userId) return;
+
+    try {
+      const info = await Purchases.getCustomerInfo();
+      const entitlement = (info as any)?.entitlements?.active?.[PRO_ENTITLEMENT_ID];
+      const rawPeriodType = entitlement?.periodType ?? null;
+      const periodType = rawPeriodType ? String(rawPeriodType).toLowerCase() : null;
+      const isTrial = Boolean(entitlement) && periodType === 'trial';
+      const expiresDate = entitlement?.expirationDate ?? null;
+      const willRenew = entitlement?.willRenew ?? null;
+      const productIdentifier = entitlement?.productIdentifier ?? null;
+
+      let subscriptionName: string | null = null;
+      let subscriptionPrice: string | null = null;
+      if (productIdentifier) {
+        try {
+          const products = await Purchases.getProducts([productIdentifier]);
+          const product = products?.[0];
+          subscriptionName = product?.title ?? null;
+          subscriptionPrice = product?.priceString ?? null;
+        } catch {
+          // Keep nulls if product metadata lookup fails.
+        }
+      }
+
+      await supabase
+        .from('subscriptions')
+        .upsert(
+          {
+            user_id: userId,
+            rc_customer_id: (info as any)?.originalAppUserId ?? null,
+            rc_app_user_id: (info as any)?.appUserId ?? null,
+            rc_entitlement_active: Boolean(entitlement),
+            rc_entitlement_id: entitlement ? PRO_ENTITLEMENT_ID : null,
+            rc_product_id: productIdentifier,
+            rc_subscription_name: subscriptionName,
+            rc_subscription_price: subscriptionPrice,
+            rc_period_type: periodType,
+            rc_is_trial: isTrial,
+            rc_expires_date: expiresDate,
+            rc_will_renew: willRenew,
+            rc_last_event_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          },
+          { onConflict: 'user_id' },
+        );
+    } catch {
+      // Leave last-synced state intact if RevenueCat refresh fails.
+    }
+  }, []);
+
+  useEffect(() => {
+    setActiveTab('home');
+  }, []);
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (state) => {
+      if (state === 'active') {
+        setActiveTab('home');
+        void refreshSubscriptionFromRevenueCat().then(async () => {
+          const latestSubscription = await getSubscription();
+          applySubscriptionDebugState(latestSubscription);
+        });
+      }
+    });
+    return () => subscription.remove();
+  }, [refreshSubscriptionFromRevenueCat]);
 
   // ── Initialize BlockingService + load Supabase data on mount ──
   useEffect(() => {
@@ -205,6 +369,10 @@ export default function MainDashboard({
           });
           setBlockSettings(blockingService.getSettings());
         }
+
+        await refreshSubscriptionFromRevenueCat();
+        const subscription = await getSubscription();
+        applySubscriptionDebugState(subscription);
       } catch (e) {
         console.warn('Failed to load dashboard data:', e);
       } finally {
@@ -212,7 +380,7 @@ export default function MainDashboard({
       }
     };
     void init();
-  }, []);
+  }, [refreshSubscriptionFromRevenueCat]);
 
   // ── Auto-open override flow when deep link arrives ──
   useEffect(() => {
@@ -261,6 +429,10 @@ export default function MainDashboard({
       await NativeModules.ScreenTimeManager.requestAuthorization();
       const result = await blockingService.selectApps();
       if (!result.cancelled) {
+        const namesFromResult = (result as any)?.appNames;
+        if (Array.isArray(namesFromResult)) {
+          setSelectedAppLabels(namesFromResult.filter((n: unknown) => typeof n === 'string'));
+        }
         refreshBlockState();
         Alert.alert('Apps selected', `${result.count} app(s)/categories selected for blocking.`);
       }
@@ -326,6 +498,8 @@ export default function MainDashboard({
     }
     setNewOrderVendor('');
     setNewOrderAmount('');
+    setShowVendorMenu(false);
+    setShowAddOrderModal(false);
   };
 
   const renderHeader = (title: string, subtitle?: string) => (
@@ -362,8 +536,109 @@ export default function MainDashboard({
     moderate: homePalette.blue,
     precautionary: homePalette.white,
   };
+  const modeVisuals: Record<BlockMode, {
+    modeCardBase: string;
+    modeCardGlow: string;
+    modeCardTint: string;
+    modeCardText: string;
+    modeCardSubText: string;
+    orderBg: string;
+    orderBorder: string;
+    orderIconBg: string;
+    orderAmount: string;
+    navBg: string;
+    navBorder: string;
+    navText: string;
+    navActiveBg: string;
+    navActiveText: string;
+    action: string;
+  }> = {
+    gentle: {
+      modeCardBase: '#20100D',
+      modeCardGlow: '#6E2A1E',
+      modeCardTint: '#9F3E2A',
+      modeCardText: '#FFFFFF',
+      modeCardSubText: '#F3C2B8',
+      orderBg: '#FFF3EE',
+      orderBorder: '#FFD8CC',
+      orderIconBg: '#FFE8E0',
+      orderAmount: '#D84A27',
+      navBg: '#1A0F0D',
+      navBorder: '#3C231D',
+      navText: '#D9AFA5',
+      navActiveBg: '#FF5E37',
+      navActiveText: '#FFFFFF',
+      action: '#D84A27',
+    },
+    moderate: {
+      modeCardBase: '#10172A',
+      modeCardGlow: '#233C82',
+      modeCardTint: '#3658C9',
+      modeCardText: '#FFFFFF',
+      modeCardSubText: '#C9D6FF',
+      orderBg: '#EFF3FF',
+      orderBorder: '#CCD7FF',
+      orderIconBg: '#DEE7FF',
+      orderAmount: '#2D4EC1',
+      navBg: '#0F1628',
+      navBorder: '#243866',
+      navText: '#AFC1FA',
+      navActiveBg: '#4E6DFF',
+      navActiveText: '#FFFFFF',
+      action: '#2D4EC1',
+    },
+    precautionary: {
+      modeCardBase: '#0D1D20',
+      modeCardGlow: '#1D5C62',
+      modeCardTint: '#2F8990',
+      modeCardText: '#EEFFFF',
+      modeCardSubText: '#BCE8EC',
+      orderBg: '#ECFAFB',
+      orderBorder: '#C8ECEF',
+      orderIconBg: '#DCF5F7',
+      orderAmount: '#1A6F77',
+      navBg: '#0D1B1E',
+      navBorder: '#23484D',
+      navText: '#A6D7DC',
+      navActiveBg: '#2B8A92',
+      navActiveText: '#F4FFFF',
+      action: '#1A6F77',
+    },
+  };
   const activeModeAccent = modeAccent[blockSettings.mode];
-  const homeActionColor = blockSettings.mode === 'precautionary' ? '#1F3E8A' : activeModeAccent;
+  const modeVisual = modeVisuals[blockSettings.mode];
+  const homeActionColor = modeVisual.action;
+  const ordersHeadingColor = '#FFFFFF';
+  const ordersSubColor =
+    blockSettings.mode === 'precautionary'
+      ? '#0F2740'
+      : blockSettings.mode === 'moderate'
+        ? '#0F2740'
+        : '#B8C8E8';
+  const ordersCountColor =
+    blockSettings.mode === 'gentle'
+      ? '#D5C4E9'
+      : blockSettings.mode === 'moderate'
+        ? '#6D84AE'
+        : '#3F6077';
+  const orderActionColor = blockSettings.mode === 'precautionary' ? modeVisual.action : activeModeAccent;
+  const orderFieldLabelColor =
+    blockSettings.mode === 'precautionary'
+      ? '#D6EDF8'
+      : blockSettings.mode === 'moderate'
+        ? '#D5E4FF'
+        : '#B8C8E8';
+  const orderFieldBg = blockSettings.mode === 'precautionary' ? '#F3F8FD' : '#EAF1FF';
+  const orderFieldText = '#213B61';
+  const orderPlaceholder = '#8AA0C4';
+  const orderModalTitleColor = '#F4F8FF';
+  const orderModalCloseColor = blockSettings.mode === 'precautionary' ? '#4E6D86' : '#C0CDE9';
+  const homeBackgroundSource =
+    blockSettings.mode === 'gentle'
+      ? require('./other_imgs/gentlebg.png')
+      : blockSettings.mode === 'precautionary'
+        ? require('./other_imgs/precaubg.png')
+        : require('./other_imgs/moderate_bg.png');
 
   const openModeSwitchOptions = () => {
     const availableModes = (['moderate', 'precautionary'] as BlockMode[])
@@ -394,9 +669,7 @@ export default function MainDashboard({
   const renderModeSelector = () => {
     const modeLabel = MODE_LABELS[blockSettings.mode].label;
     const cooldown = blockSettings.cooldowns[blockSettings.mode];
-    const cardBg = blockSettings.mode === 'precautionary' ? '#EEF1FF' : '#A795F7';
-    const cardText = '#121524';
-    const cardSubText = '#2D3348';
+    const modeDesc = MODE_LABELS[blockSettings.mode].desc;
 
     return (
       <Pressable
@@ -406,18 +679,50 @@ export default function MainDashboard({
           borderRadius: 24,
           paddingHorizontal: 20,
           paddingVertical: 22,
-          backgroundColor: cardBg,
+          backgroundColor: modeVisual.modeCardBase,
+          borderWidth: 1,
+          borderColor: modeVisual.modeCardTint,
+          overflow: 'hidden',
           marginBottom: 14,
         }}
       >
-        <Text style={{ color: cardSubText, fontSize: 13, fontWeight: '700' }}>Current mode</Text>
-        <Text style={{ color: cardText, fontSize: 39, lineHeight: 44, fontWeight: '900', marginTop: 6 }}>
+        <View
+          pointerEvents="none"
+          style={{
+            position: 'absolute',
+            width: 220,
+            height: 220,
+            borderRadius: 110,
+            backgroundColor: modeVisual.modeCardGlow,
+            top: -120,
+            right: -40,
+            opacity: 0.55,
+          }}
+        />
+        <View
+          pointerEvents="none"
+          style={{
+            position: 'absolute',
+            width: 180,
+            height: 180,
+            borderRadius: 90,
+            backgroundColor: modeVisual.modeCardTint,
+            bottom: -100,
+            left: -60,
+            opacity: 0.5,
+          }}
+        />
+        <Text style={{ color: modeVisual.modeCardSubText, fontSize: 13, fontWeight: '700' }}>Current mode</Text>
+        <Text style={{ color: modeVisual.modeCardText, fontSize: 39, lineHeight: 44, fontWeight: '800', marginTop: 6 }}>
           {modeLabel}
         </Text>
-        <Text style={{ color: cardSubText, fontSize: 15, fontWeight: '600', marginTop: 8 }}>
+        <Text style={{ color: modeVisual.modeCardSubText, fontSize: 14, fontWeight: '500', marginTop: 6 }}>
+          {modeDesc}
+        </Text>
+        <Text style={{ color: modeVisual.modeCardSubText, fontSize: 15, fontWeight: '600', marginTop: 8 }}>
           Cooldown: {cooldown} min
         </Text>
-        <Text style={{ color: cardSubText, fontSize: 13, marginTop: 4 }}>
+        <Text style={{ color: modeVisual.modeCardSubText, fontSize: 13, marginTop: 4 }}>
           Hold to switch mode
         </Text>
       </Pressable>
@@ -425,40 +730,115 @@ export default function MainDashboard({
   };
 
   const renderHome = () => (
-    <ScrollView contentContainerStyle={[styles.scrollContent, { backgroundColor: homePalette.bg, paddingTop: 14 }]}> 
+    <ScrollView contentContainerStyle={[styles.scrollContent, { backgroundColor: 'transparent', paddingTop: 14 }]}> 
       <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 20 }}>
-        <View style={{ flex: 1, alignItems: 'flex-start' }}>
-          <Text style={{ fontSize: 28, fontWeight: '800', color: '#151925', lineHeight: 34 }}>
+        <View style={{ flex: 1, flexDirection: 'row', alignItems: 'center' }}>
+          <Pressable
+            onPress={() => setActiveTab('settings')}
+            style={{
+              width: 38,
+              height: 38,
+              borderRadius: 19,
+              backgroundColor: '#4A69FF',
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+          >
+            <Text style={{ color: '#FFFFFF', fontSize: 12, fontWeight: '700' }}>
+              {(userName?.trim()?.[0] ?? 'U').toUpperCase()}
+            </Text>
+          </Pressable>
+          <Text style={{ marginLeft: 10, fontSize: 21, fontWeight: '500', color: '#151925' }}>
             Hi {userName || 'there'}
           </Text>
         </View>
 
         <Pressable
-          onPress={() => setActiveTab('settings')}
+          onPress={() => setActiveSheet('reminders')}
           style={{
-            width: 42,
-            height: 42,
-            borderRadius: 21,
-            backgroundColor: '#4A69FF',
+            width: 38,
+            height: 38,
+            borderRadius: 19,
+            backgroundColor: '#FFFFFF',
+            borderWidth: 1,
+            borderColor: '#E4E8F1',
             alignItems: 'center',
             justifyContent: 'center',
           }}
         >
-          <Text style={{ color: '#FFFFFF', fontSize: 13, fontWeight: '800' }}>
-            {(userName?.trim()?.[0] ?? 'U').toUpperCase()}
-          </Text>
+          <Text style={{ color: '#151925', fontSize: 15 }}>🔔</Text>
         </Pressable>
       </View>
 
       {renderModeSelector()}
 
-      <Text style={{ color: '#79819A', fontSize: 13, marginBottom: 14, textAlign: 'center' }}>
-        {MODE_LABELS[blockSettings.mode].desc}
-      </Text>
+      <View
+        style={{
+          backgroundColor: '#FFFFFF',
+          borderRadius: 16,
+          paddingVertical: 10,
+          paddingHorizontal: 12,
+          marginBottom: 12,
+          borderWidth: 1,
+          borderColor: '#E4E8F1',
+        }}
+      >
+        <Text style={{ color: '#1A2238', fontSize: 13, fontWeight: '700' }}>
+          Subscription: {subscriptionPlan}
+        </Text>
+        <Text style={{ color: '#4E5A7A', fontSize: 12, marginTop: 4 }}>
+          Trial active: {trialActive ? 'yes' : 'no'}
+        </Text>
+        <Text style={{ color: '#4E5A7A', fontSize: 12, marginTop: 2 }}>
+          Period type: {subscriptionPeriodType}
+        </Text>
+        <Text style={{ color: '#4E5A7A', fontSize: 12, marginTop: 2 }}>
+          Will renew: {subscriptionWillRenew === null ? 'unknown' : subscriptionWillRenew ? 'yes' : 'no'}
+        </Text>
+        <Text style={{ color: '#4E5A7A', fontSize: 12, marginTop: 2 }}>
+          Expires: {subscriptionExpiresAt ? new Date(subscriptionExpiresAt).toLocaleString() : 'unknown'}
+        </Text>
+      </View>
+
+      {blockState.isShieldActive && (
+        <View
+          style={{
+            backgroundColor: '#FFFFFF',
+            borderRadius: 18,
+            padding: 14,
+            marginBottom: 12,
+            borderWidth: 1,
+            borderColor: '#E4E8F1',
+          }}
+        >
+          <Text style={{ color: '#151925', fontWeight: '700', fontSize: 15, textAlign: 'center' }}>
+            {blockState.activeBlockType === 'budget' ? '🔴 Over-budget block active' : '❄️ Precautionary block active'}
+          </Text>
+          <Pressable
+            onPress={() => setShowOverrideFlow(true)}
+            style={{
+              marginTop: 12,
+              backgroundColor: homeActionColor,
+              paddingVertical: 16,
+              borderRadius: 14,
+              alignItems: 'center',
+              shadowColor: '#0E1320',
+              shadowOpacity: 0.18,
+              shadowRadius: 10,
+              shadowOffset: { width: 0, height: 6 },
+              elevation: 4,
+            }}
+          >
+            <Text style={{ color: '#FFFFFF', fontWeight: '700', fontSize: 16 }}>
+              Request override
+            </Text>
+          </Pressable>
+        </View>
+      )}
 
       {blockState.autoShiftedFromPrecau && (
-        <View style={{ backgroundColor: '#321710', borderRadius: 16, padding: 14, marginBottom: 14, borderWidth: 1, borderColor: homePalette.orange }}>
-          <Text style={{ color: '#FF876E', fontWeight: '800', fontSize: 14, textAlign: 'center' }}>
+        <View style={{ backgroundColor: '#FFFFFF', borderRadius: 14, padding: 12, marginBottom: 12, borderWidth: 1, borderColor: '#FFD7CC' }}>
+          <Text style={{ color: '#AA3E28', fontWeight: '600', fontSize: 13, textAlign: 'center' }}>
             Over budget — auto-shifted to Gentle mode
           </Text>
         </View>
@@ -467,112 +847,137 @@ export default function MainDashboard({
       {showPrecauRecommendation && (
         <Pressable
           onPress={() => handleSetMode('precautionary')}
-          style={{ backgroundColor: '#131A2B', borderRadius: 16, padding: 14, marginBottom: 14, borderWidth: 1, borderColor: '#264A8F' }}
+          style={{
+            alignSelf: 'flex-start',
+            paddingHorizontal: 10,
+            paddingVertical: 6,
+            borderRadius: 999,
+            marginBottom: 10,
+            backgroundColor: '#F2F6FF',
+            borderWidth: 1,
+            borderColor: '#D6E3FF',
+          }}
         >
-          <Text style={{ color: '#8CB3FF', fontWeight: '800', fontSize: 13 }}>
-            💡 You're under budget — switch to Precautionary for extra protection
-          </Text>
-          <Text style={{ color: homePalette.muted, fontSize: 12, marginTop: 4 }}>
-            Current mode ({MODE_LABELS[blockSettings.mode].label}) only activates when you go over budget.
+          <Text style={{ color: '#2B4C93', fontWeight: '600', fontSize: 11 }}>
+            💡 Under budget: switch to Precautionary for extra protection
           </Text>
         </Pressable>
       )}
 
-      <Pressable
-        onPress={handleSelectApps}
+      <View style={{ flexDirection: 'row', gap: 12, marginBottom: 14 }}>
+        <View style={{ flex: 1, backgroundColor: homePalette.white, borderRadius: 22, padding: 16 }}>
+          <Text style={{ color: '#535A70', fontSize: 11, textTransform: 'uppercase', letterSpacing: 1, fontWeight: '600' }}>
+            Weekly spend
+          </Text>
+          <Text style={{ fontSize: 30, fontWeight: '700', color: '#11131A', marginTop: 6 }}>${totalSpend.toFixed(0)}</Text>
+          <Text style={{ marginTop: 4, color: '#5F6577', fontSize: 12, fontWeight: '500' }}>of ${weeklyBudget} budget</Text>
+          <View style={{ marginTop: 12, height: 8, borderRadius: 999, backgroundColor: '#DCE0ED' }}>
+            <View style={{ height: 8, borderRadius: 999, backgroundColor: homePalette.orange, width: `${budgetProgress * 100}%` }} />
+          </View>
+        </View>
+        <View style={{ flex: 1, backgroundColor: '#FFFFFF', borderRadius: 22, padding: 16, borderWidth: 1, borderColor: '#E4E8F1' }}>
+          <Text style={{ color: '#535A70', fontSize: 11, textTransform: 'uppercase', letterSpacing: 1, fontWeight: '600' }}>
+            Remaining
+          </Text>
+          <Text style={{ fontSize: 30, fontWeight: '700', color: '#11131A', marginTop: 6 }}>${remaining.toFixed(0)}</Text>
+          <Text style={{ marginTop: 4, color: '#5F6577', fontSize: 12, fontWeight: '500' }}>before lock threshold</Text>
+        </View>
+      </View>
+
+      <View
         style={{
-          backgroundColor: activeModeAccent,
+          backgroundColor: '#FFFFFF',
           borderRadius: 22,
           padding: 18,
           borderWidth: 1,
-          borderColor: activeModeAccent,
+          borderColor: '#DDE3EF',
           marginBottom: 14,
         }}
       >
         <Text
           style={{
-            color: blockSettings.mode === 'precautionary' ? '#252834' : '#FFD8D1',
+            color: '#2E3140',
             fontSize: 12,
             textTransform: 'uppercase',
             letterSpacing: 1,
-            fontWeight: '700',
+            fontWeight: '600',
           }}
         >
           Shielded apps
         </Text>
         <Text style={{
-          color: blockSettings.mode === 'precautionary' ? '#16171F' : '#FFFFFF',
-          fontWeight: '800',
-          fontSize: 24,
+          color: '#151925',
+          fontWeight: '700',
+          fontSize: 22,
           marginTop: 8,
         }}>
           {blockSettings.selectedAppCount > 0
             ? `${blockSettings.selectedAppCount} app(s) selected`
             : 'No apps selected'}
         </Text>
-        <Text
-          style={{
-            color: blockSettings.mode === 'precautionary' ? '#2A2E3D' : '#FFE4DE',
-            fontWeight: '700',
-            marginTop: 8,
-            fontSize: 13,
-          }}
-        >
-          {blockSettings.selectedAppCount > 0 ? 'Tap to change' : 'Tap to select delivery apps'}
-        </Text>
-      </Pressable>
+        {blockSettings.selectedAppCount > 0 ? (
+          <Text
+            style={{
+              color: '#2E3140',
+              fontWeight: '500',
+              marginTop: 8,
+              fontSize: 13,
+            }}
+          >
+            {selectedAppLabels.length > 0
+              ? `Selected: ${selectedAppLabels.slice(0, 3).join(', ')}${selectedAppLabels.length > 3 ? ` +${selectedAppLabels.length - 3}` : ''}`
+              : `${blockSettings.selectedAppCount} protected app/category selection(s)`}
+          </Text>
+        ) : (
+          <Text
+            style={{
+              color: '#2E3140',
+              fontWeight: '500',
+              marginTop: 8,
+              fontSize: 13,
+            }}
+          >
+            Choose delivery apps/categories to shield.
+          </Text>
+        )}
 
-      <View style={{ flexDirection: 'row', gap: 12, marginBottom: 14 }}>
-        <View style={{ flex: 1, backgroundColor: homePalette.white, borderRadius: 22, padding: 16 }}>
-          <Text style={{ color: '#535A70', fontSize: 11, textTransform: 'uppercase', letterSpacing: 1, fontWeight: '700' }}>
-            Weekly spend
-          </Text>
-          <Text style={{ fontSize: 30, fontWeight: '800', color: '#11131A', marginTop: 6 }}>${totalSpend.toFixed(0)}</Text>
-          <Text style={{ marginTop: 4, color: '#5F6577', fontSize: 12, fontWeight: '600' }}>of ${weeklyBudget} budget</Text>
-          <View style={{ marginTop: 12, height: 8, borderRadius: 999, backgroundColor: '#DCE0ED' }}>
-            <View style={{ height: 8, borderRadius: 999, backgroundColor: homePalette.orange, width: `${budgetProgress * 100}%` }} />
-          </View>
-        </View>
-        <View style={{ flex: 1, backgroundColor: homePalette.blue, borderRadius: 22, padding: 16 }}>
-          <Text style={{ color: '#D7DEFF', fontSize: 11, textTransform: 'uppercase', letterSpacing: 1, fontWeight: '700' }}>
-            Remaining
-          </Text>
-          <Text style={{ fontSize: 30, fontWeight: '800', color: '#FFFFFF', marginTop: 6 }}>${remaining.toFixed(0)}</Text>
-          <Text style={{ marginTop: 4, color: '#D7DEFF', fontSize: 12, fontWeight: '600' }}>before lock threshold</Text>
+        <View style={{ marginTop: 12, alignItems: 'flex-start' }}>
+          <Pressable
+            onPress={handleSelectApps}
+            style={{
+              backgroundColor:
+                blockSettings.mode === 'gentle'
+                  ? '#DE6B44'
+                  : blockSettings.mode === 'moderate'
+                    ? '#3E7EC6'
+                    : '#41A78F',
+              paddingHorizontal: 14,
+              paddingVertical: 9,
+              borderRadius: 12,
+            }}
+          >
+            <Text style={{ color: '#FFFFFF', fontWeight: '600', fontSize: 13 }}>
+              {blockSettings.selectedAppCount > 0 ? 'Manage apps' : 'Select apps'}
+            </Text>
+          </Pressable>
         </View>
       </View>
 
-      <View style={{ backgroundColor: homePalette.panel, borderRadius: 18, padding: 16, borderWidth: 1, borderColor: '#242A38', marginBottom: 14 }}>
+      <View style={{ backgroundColor: '#FFFFFF', borderRadius: 18, padding: 16, borderWidth: 1, borderColor: '#E4E8F1', marginBottom: 14 }}>
         <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
           <View>
-            <Text style={{ color: homePalette.muted, fontSize: 11, textTransform: 'uppercase', letterSpacing: 1, fontWeight: '700' }}>Streak</Text>
-            <Text style={{ fontSize: 24, fontWeight: '800', color: homePalette.text, marginTop: 4 }}>3 days</Text>
+            <Text style={{ color: '#5E667B', fontSize: 11, textTransform: 'uppercase', letterSpacing: 1, fontWeight: '600' }}>Streak</Text>
+            <Text style={{ fontSize: 24, fontWeight: '700', color: '#151925', marginTop: 4 }}>3 days</Text>
           </View>
           <Text style={{ fontSize: 32 }}>🔥</Text>
         </View>
         {blockState.overridesThisWeek > 0 && (
-          <Text style={{ color: activeModeAccent, fontWeight: '700', marginTop: 8, fontSize: 13 }}>
+          <Text style={{ color: '#5E667B', fontWeight: '500', marginTop: 8, fontSize: 13 }}>
             {blockState.overridesThisWeek} override(s) this week
             {blockSettings.penaltyEnabled ? ` · $${blockState.penaltyAccumulated} guilt jar` : ''}
           </Text>
         )}
       </View>
-
-      {blockState.isShieldActive && (
-        <View style={{ backgroundColor: homePalette.panelSoft, borderRadius: 16, padding: 14, marginBottom: 14, borderWidth: 1, borderColor: '#2A3042' }}>
-          <Text style={{ color: homePalette.text, fontWeight: '800', fontSize: 15, textAlign: 'center' }}>
-            {blockState.activeBlockType === 'budget' ? '🔴 Over-budget block active' : '❄️ Precautionary block active'}
-          </Text>
-          <Pressable
-            onPress={() => setShowOverrideFlow(true)}
-            style={{ marginTop: 10, backgroundColor: activeModeAccent, paddingVertical: 11, borderRadius: 12, alignItems: 'center' }}
-          >
-            <Text style={{ color: blockSettings.mode === 'precautionary' ? '#171922' : '#FFFFFF', fontWeight: '800', fontSize: 13 }}>
-              Request override
-            </Text>
-          </Pressable>
-        </View>
-      )}
 
       <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 8, marginBottom: 10 }}>
         <Text style={{ fontSize: 18, fontWeight: '800', color: '#151925' }}>Recent orders</Text>
@@ -589,69 +994,194 @@ export default function MainDashboard({
           style={{
             padding: 16,
             borderRadius: 16,
-            backgroundColor: homePalette.panel,
+            backgroundColor: modeVisual.orderBg,
             borderWidth: 1,
-            borderColor: '#232837',
+            borderColor: modeVisual.orderBorder,
             flexDirection: 'row',
             justifyContent: 'space-between',
             alignItems: 'center',
             marginBottom: 12,
           }}
         >
-          <View>
-            <Text style={{ fontWeight: '700', color: homePalette.text, fontSize: 15 }}>{order.vendor}</Text>
-            <Text style={{ marginTop: 4, color: homePalette.muted, fontSize: 12 }}>{formatOrderDate(order.ordered_at)}</Text>
+          <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+            <View
+              style={{
+                width: 34,
+                height: 34,
+                borderRadius: 17,
+                backgroundColor: modeVisual.orderIconBg,
+                alignItems: 'center',
+                justifyContent: 'center',
+                marginRight: 10,
+              }}
+            >
+              <Text style={{ fontSize: 16 }}>🍽️</Text>
+            </View>
+            <View>
+              <Text style={{ fontWeight: '700', color: '#151925', fontSize: 15 }}>{order.vendor}</Text>
+              <Text style={{ marginTop: 4, color: '#6D7386', fontSize: 12 }}>{formatOrderDate(order.ordered_at)}</Text>
+            </View>
           </View>
-          <Text style={{ fontWeight: '800', color: homePalette.orange, fontSize: 16 }}>-${order.amount.toFixed(2)}</Text>
+          <Text style={{ fontWeight: '800', color: modeVisual.orderAmount, fontSize: 16 }}>-${order.amount.toFixed(2)}</Text>
         </View>
       ))}
     </ScrollView>
   );
 
   const renderOrders = () => (
-    <ScrollView contentContainerStyle={styles.scrollContent}>
-      {renderHeader('Orders & Spend', 'Track every delivery order')}
-      <View style={styles.formCard}>
-        <Text style={styles.formTitle}>Quick add order</Text>
-        <TextInput
-          placeholder="Vendor"
-          placeholderTextColor={COLORS.muted}
-          value={newOrderVendor}
-          onChangeText={setNewOrderVendor}
-          style={styles.input}
-        />
-        <TextInput
-          placeholder="$0.00"
-          placeholderTextColor={COLORS.muted}
-          value={newOrderAmount}
-          onChangeText={setNewOrderAmount}
-          keyboardType="decimal-pad"
-          style={styles.input}
-        />
-        <Pressable style={styles.primaryButton} onPress={handleAddOrder}>
-          <Text style={styles.primaryButtonText}>Add order</Text>
-        </Pressable>
-      </View>
+    <>
+      <ScrollView contentContainerStyle={styles.scrollContent}>
+        <View style={styles.ordersHeader}>
+          <Text style={[styles.ordersHeaderTitle, { color: ordersHeadingColor }]}>Orders & Spend</Text>
+          <Text style={[styles.ordersHeaderSubtitle, { color: ordersSubColor }]}>Track every delivery order</Text>
+        </View>
 
-      {orders.map((order) => (
         <Pressable
-          key={order.id}
-          style={styles.orderRow}
-          onLongPress={() =>
-            Alert.alert('Delete order?', `${order.vendor} — $${order.amount.toFixed(2)}`, [
-              { text: 'Cancel', style: 'cancel' },
-              { text: 'Delete', style: 'destructive', onPress: () => handleDeleteOrder(order.id) },
-            ])
-          }
+          onPress={() => setShowAddOrderModal(true)}
+          style={[
+            styles.addOrderCard,
+            {
+              backgroundColor: modeVisual.modeCardBase,
+              borderColor: modeVisual.modeCardGlow,
+            },
+          ]}
         >
           <View>
-            <Text style={styles.orderVendor}>{order.vendor}</Text>
-            <Text style={styles.orderDate}>{formatOrderDate(order.ordered_at)}</Text>
+            <Text style={[styles.addOrderCardTitle, { color: modeVisual.modeCardText }]}>Log your next order</Text>
           </View>
-          <Text style={styles.orderAmount}>-${order.amount.toFixed(2)}</Text>
+          <View style={[styles.addOrderCtaPill, { backgroundColor: orderActionColor }]}>
+            <Text style={styles.addOrderCtaText}>Add order</Text>
+          </View>
         </Pressable>
-      ))}
-    </ScrollView>
+
+        <View style={styles.ordersSectionHeader}>
+          <Text style={[styles.ordersSectionTitle, { color: modeVisual.modeCardText }]}>Recent orders</Text>
+          <Text style={[styles.ordersSectionCount, { color: ordersCountColor }]}>{orders.length} total</Text>
+        </View>
+
+        {orders.length === 0 ? (
+          <View
+            style={[
+              styles.ordersEmptyCard,
+              {
+                backgroundColor: modeVisual.orderBg,
+                borderColor: modeVisual.orderBorder,
+              },
+            ]}
+          >
+            <Text style={[styles.ordersEmptyTitle, { color: modeVisual.orderAmount }]}>No orders yet</Text>
+            <Text style={[styles.ordersEmptyBody, { color: modeVisual.modeCardSubText }]}>Use Add order to log your first delivery this week.</Text>
+          </View>
+        ) : (
+          orders.map((order) => (
+            <Pressable
+              key={order.id}
+              style={[
+                styles.orderRow,
+                {
+                  backgroundColor: modeVisual.orderBg,
+                  borderColor: modeVisual.orderBorder,
+                },
+              ]}
+              onLongPress={() =>
+                Alert.alert('Delete order?', `${order.vendor} — $${order.amount.toFixed(2)}`, [
+                  { text: 'Cancel', style: 'cancel' },
+                  { text: 'Delete', style: 'destructive', onPress: () => handleDeleteOrder(order.id) },
+                ])
+              }
+            >
+              <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                <View style={[styles.orderIconBubble, { backgroundColor: modeVisual.orderIconBg }]}>
+                  <Text style={{ fontSize: 16 }}>🍽️</Text>
+                </View>
+                <View>
+                  <Text style={styles.orderVendor}>{order.vendor}</Text>
+                  <Text style={styles.orderDate}>{formatOrderDate(order.ordered_at)}</Text>
+                </View>
+              </View>
+              <Text style={[styles.orderAmount, { color: modeVisual.orderAmount }]}>-${order.amount.toFixed(2)}</Text>
+            </Pressable>
+          ))
+        )}
+      </ScrollView>
+
+      <Modal
+        visible={showAddOrderModal}
+        transparent
+        animationType="slide"
+        onRequestClose={() => {
+          setShowAddOrderModal(false);
+          setShowVendorMenu(false);
+        }}
+      >
+        <View style={styles.orderModalBackdrop}>
+          <View style={[styles.orderModalSheet, { backgroundColor: modeVisual.modeCardBase, borderColor: modeVisual.modeCardGlow }]}>
+            <View style={styles.orderModalHeader}>
+              <Text style={[styles.orderModalTitle, { color: orderModalTitleColor }]}>Add order</Text>
+              <Pressable
+                onPress={() => {
+                  setShowAddOrderModal(false);
+                  setShowVendorMenu(false);
+                }}
+              >
+                <Text style={[styles.orderModalClose, { color: orderModalCloseColor }]}>Close</Text>
+              </Pressable>
+            </View>
+
+            <Text style={[styles.orderFieldLabel, { color: orderFieldLabelColor }]}>Vendor</Text>
+            <Pressable
+              onPress={() => setShowVendorMenu((prev) => !prev)}
+              style={[styles.vendorSelect, { borderColor: modeVisual.orderBorder, backgroundColor: orderFieldBg }]}
+            >
+              <Text style={[styles.vendorSelectText, { color: newOrderVendor ? orderFieldText : orderPlaceholder }]}>{newOrderVendor || 'Select delivery app'}</Text>
+              <Text style={[styles.vendorSelectChevron, { color: orderPlaceholder }]}>{showVendorMenu ? '▲' : '▼'}</Text>
+            </Pressable>
+
+            {showVendorMenu && (
+              <View style={[styles.vendorMenu, { borderColor: modeVisual.orderBorder, backgroundColor: orderFieldBg }]}>
+                {DELIVERY_APPS.map((app) => (
+                  <Pressable
+                    key={app}
+                    onPress={() => {
+                      setNewOrderVendor(app);
+                      setShowVendorMenu(false);
+                    }}
+                    style={[styles.vendorMenuItem, { borderBottomColor: 'rgba(33,59,97,0.12)' }]}
+                  >
+                    <Text style={[styles.vendorMenuItemText, { color: orderFieldText }]}>{app}</Text>
+                  </Pressable>
+                ))}
+              </View>
+            )}
+
+            <Text style={[styles.orderFieldLabel, { color: orderFieldLabelColor }]}>Total amount</Text>
+            <TextInput
+              placeholder="$0.00"
+              placeholderTextColor={orderPlaceholder}
+              value={newOrderAmount}
+              onChangeText={setNewOrderAmount}
+              keyboardType="decimal-pad"
+              style={[
+                styles.orderAmountInput,
+                {
+                  borderColor: modeVisual.orderBorder,
+                  backgroundColor: orderFieldBg,
+                  color: orderFieldText,
+                },
+              ]}
+            />
+
+            <Pressable
+              style={[styles.orderSubmitButton, { backgroundColor: orderActionColor }]}
+              onPress={handleAddOrder}
+              disabled={!newOrderVendor.trim() || Number.isNaN(Number.parseFloat(newOrderAmount))}
+            >
+              <Text style={styles.orderSubmitButtonText}>Add order</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
+    </>
   );
 
   const vendorBreakdown = useMemo(() => {
@@ -1034,22 +1564,31 @@ export default function MainDashboard({
       );
     }
     return (
-      <View style={styles.sheet}>
-        <View style={styles.sheetHeader}>
-          <Text style={styles.sheetTitle}>Reminders</Text>
-          <Pressable onPress={() => setActiveSheet(null)}>
-            <Text style={styles.sheetClose}>Close</Text>
-          </Pressable>
+      <Modal
+        visible
+        transparent
+        animationType="fade"
+        onRequestClose={() => setActiveSheet(null)}
+      >
+        <View style={styles.reminderOverlayBackdrop}>
+          <View style={styles.reminderOverlayCard}>
+            <View style={styles.sheetHeader}>
+              <Text style={styles.sheetTitle}>Reminders</Text>
+              <Pressable onPress={() => setActiveSheet(null)}>
+                <Text style={styles.sheetClose}>Close</Text>
+              </Pressable>
+            </View>
+            <View style={styles.toggleRow}>
+              <Text style={styles.toggleText}>Daily budget reminders</Text>
+              <Switch value={budgetReminders} onValueChange={setBudgetReminders} />
+            </View>
+            <View style={styles.toggleRow}>
+              <Text style={styles.toggleText}>Cooking ideas before meals</Text>
+              <Switch value={cookingIdeas} onValueChange={setCookingIdeas} />
+            </View>
+          </View>
         </View>
-        <View style={styles.toggleRow}>
-          <Text style={styles.toggleText}>Daily budget reminders</Text>
-          <Switch value={budgetReminders} onValueChange={setBudgetReminders} />
-        </View>
-        <View style={styles.toggleRow}>
-          <Text style={styles.toggleText}>Cooking ideas before meals</Text>
-          <Switch value={cookingIdeas} onValueChange={setCookingIdeas} />
-        </View>
-      </View>
+      </Modal>
     );
   };
 
@@ -1102,39 +1641,59 @@ export default function MainDashboard({
     return <ScreenTimeTest onBack={() => setShowScreenTimeTest(false)} />;
   }
 
-  const isHomeTab = activeTab === 'home';
-  const containerBg = isHomeTab ? '#FFFFFF' : COLORS.cream;
-  const tabBarBg = isHomeTab ? '#FFFFFF' : COLORS.white;
-  const tabBarBorder = isHomeTab ? '#E4E8F1' : COLORS.border;
-  const tabTextColor = isHomeTab ? '#8E96AC' : COLORS.muted;
-  const tabActiveTextColor = isHomeTab ? '#151925' : COLORS.ink;
-  const tabActiveBg = isHomeTab ? '#F1F3F8' : COLORS.cream;
+  const isModeThemedTab =
+    activeTab === 'home' ||
+    activeTab === 'orders' ||
+    activeTab === 'bridge' ||
+    activeTab === 'reports' ||
+    activeTab === 'settings';
+  const containerBg = isModeThemedTab ? '#FFFFFF' : COLORS.cream;
+  const tabBarBg = isModeThemedTab ? modeVisual.navBg : COLORS.white;
+  const tabBarBorder = isModeThemedTab ? modeVisual.navBorder : COLORS.border;
+  const tabTextColor = isModeThemedTab ? modeVisual.navText : COLORS.muted;
+  const tabActiveTextColor = isModeThemedTab ? modeVisual.navActiveText : COLORS.ink;
+  const tabActiveBg = isModeThemedTab ? modeVisual.navActiveBg : COLORS.cream;
 
-  return (
-    <SafeAreaView style={[styles.container, { backgroundColor: containerBg }]}>
+  const content = (
+    <SafeAreaView style={[styles.container, { backgroundColor: isModeThemedTab ? 'transparent' : containerBg }]}> 
       {renderContent()}
       {renderSheet()}
-      <View style={[styles.tabBar, { backgroundColor: tabBarBg, borderColor: tabBarBorder }]}>
+      <View style={[styles.tabBar, { backgroundColor: tabBarBg, borderColor: tabBarBorder }]}> 
         {([
-          { key: 'home', label: 'Home' },
-          { key: 'orders', label: 'Orders' },
-          { key: 'reports', label: 'Reports' },
-          { key: 'bridge', label: 'Bridge' },
-          { key: 'settings', label: 'Settings' },
-        ] as { key: TabKey; label: string }[]).map((tab) => (
+          { key: 'home' },
+          { key: 'orders' },
+          { key: 'bridge' },
+          { key: 'reports' },
+          { key: 'settings' },
+        ] as { key: TabKey }[]).map((tab) => (
           <Pressable
             key={tab.key}
             onPress={() => setActiveTab(tab.key)}
             style={[styles.tabItem, activeTab === tab.key && { backgroundColor: tabActiveBg }]}
           >
-            <Text style={[styles.tabText, { color: tabTextColor }, activeTab === tab.key && { color: tabActiveTextColor }]}>
-              {tab.label}
-            </Text>
+            <View style={styles.tabIconWrap}>
+              <NavIcon tab={tab.key} color={activeTab === tab.key ? tabActiveTextColor : tabTextColor} />
+            </View>
+            {activeTab === tab.key ? <View style={[styles.tabDot, { backgroundColor: tabActiveTextColor }]} /> : null}
           </Pressable>
         ))}
       </View>
     </SafeAreaView>
   );
+
+  if (isModeThemedTab) {
+    return (
+      <ImageBackground
+        source={homeBackgroundSource}
+        style={styles.container}
+        imageStyle={{ resizeMode: 'cover' }}
+      >
+        {content}
+      </ImageBackground>
+    );
+  }
+
+  return content;
 }
 
 const styles = StyleSheet.create({
@@ -1181,6 +1740,23 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.white,
     borderRadius: 20,
     padding: 16,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  reminderOverlayBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    alignItems: 'center',
+    justifyContent: 'flex-start',
+    paddingTop: 90,
+    paddingHorizontal: 16,
+  },
+  reminderOverlayCard: {
+    width: '100%',
+    maxWidth: 520,
+    backgroundColor: COLORS.white,
+    borderRadius: 20,
+    padding: 18,
     borderWidth: 1,
     borderColor: COLORS.border,
   },
@@ -1256,6 +1832,81 @@ const styles = StyleSheet.create({
     color: COLORS.coral,
     fontWeight: '600',
   },
+  ordersHeader: {
+    marginBottom: 18,
+  },
+  ordersHeaderTitle: {
+    fontSize: 28,
+    fontWeight: '800',
+    color: '#F4F7FF',
+  },
+  ordersHeaderSubtitle: {
+    marginTop: 6,
+    color: '#B6C4E8',
+    fontSize: 14,
+    fontWeight: '500',
+  },
+  addOrderCard: {
+    borderRadius: 22,
+    borderWidth: 1,
+    padding: 18,
+    marginBottom: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  addOrderCardTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+  },
+  addOrderCardBody: {
+    marginTop: 6,
+    fontSize: 13,
+    fontWeight: '500',
+  },
+  addOrderCtaPill: {
+    borderRadius: 999,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+  },
+  addOrderCtaText: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.6,
+  },
+  ordersSectionHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 10,
+  },
+  ordersSectionTitle: {
+    fontSize: 17,
+    fontWeight: '800',
+  },
+  ordersSectionCount: {
+    fontSize: 12,
+    fontWeight: '600',
+    textTransform: 'uppercase',
+    letterSpacing: 0.8,
+  },
+  ordersEmptyCard: {
+    borderRadius: 18,
+    borderWidth: 1,
+    padding: 16,
+    marginBottom: 12,
+  },
+  ordersEmptyTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  ordersEmptyBody: {
+    marginTop: 5,
+    fontSize: 13,
+    fontWeight: '500',
+  },
   orderRow: {
     padding: 16,
     borderRadius: 16,
@@ -1266,6 +1917,14 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     marginBottom: 12,
+  },
+  orderIconBubble: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 10,
   },
   orderVendor: {
     fontWeight: '600',
@@ -1279,6 +1938,97 @@ const styles = StyleSheet.create({
   orderAmount: {
     fontWeight: '700',
     color: COLORS.coral,
+  },
+  orderModalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(6, 10, 22, 0.55)',
+    justifyContent: 'flex-start',
+    alignItems: 'center',
+    paddingTop: 88,
+    paddingHorizontal: 16,
+  },
+  orderModalSheet: {
+    width: '100%',
+    maxWidth: 460,
+    borderRadius: 22,
+    borderWidth: 1,
+    paddingHorizontal: 20,
+    paddingTop: 16,
+    paddingBottom: 34,
+  },
+  orderModalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 14,
+  },
+  orderModalTitle: {
+    fontSize: 20,
+    fontWeight: '800',
+  },
+  orderModalClose: {
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  orderFieldLabel: {
+    fontSize: 12,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.8,
+    marginBottom: 8,
+    marginTop: 6,
+  },
+  vendorSelect: {
+    borderWidth: 1,
+    borderRadius: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 13,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  vendorSelectText: {
+    fontSize: 15,
+    fontWeight: '600',
+  },
+  vendorSelectChevron: {
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  vendorMenu: {
+    borderWidth: 1,
+    borderRadius: 14,
+    marginTop: 8,
+    overflow: 'hidden',
+  },
+  vendorMenuItem: {
+    paddingHorizontal: 14,
+    paddingVertical: 11,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255,255,255,0.08)',
+  },
+  vendorMenuItemText: {
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  orderAmountInput: {
+    borderWidth: 1,
+    borderRadius: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  orderSubmitButton: {
+    marginTop: 14,
+    borderRadius: 14,
+    paddingVertical: 14,
+    alignItems: 'center',
+  },
+  orderSubmitButtonText: {
+    color: '#FFFFFF',
+    fontWeight: '700',
+    fontSize: 16,
   },
   blockCard: {
     backgroundColor: COLORS.white,
@@ -1493,33 +2243,41 @@ const styles = StyleSheet.create({
   },
   tabBar: {
     position: 'absolute',
-    left: 16,
-    right: 16,
-    bottom: 24,
+    left: 20,
+    right: 20,
+    bottom: 16,
+    minHeight: 64,
     flexDirection: 'row',
-    backgroundColor: COLORS.white,
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    padding: 6,
     justifyContent: 'space-between',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderRadius: 999,
+    paddingHorizontal: 8,
+    paddingVertical: 8,
+    shadowColor: '#000000',
+    shadowOpacity: 0.1,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 7,
   },
   tabItem: {
     flex: 1,
-    paddingVertical: 10,
+    minHeight: 48,
+    borderRadius: 24,
     alignItems: 'center',
-    borderRadius: 999,
+    justifyContent: 'center',
+    gap: 3,
   },
-  tabItemActive: {
-    backgroundColor: COLORS.cream,
+  tabIconWrap: {
+    width: 22,
+    height: 22,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  tabText: {
-    color: COLORS.muted,
-    fontWeight: '600',
-    fontSize: 12,
-  },
-  tabTextActive: {
-    color: COLORS.ink,
+  tabDot: {
+    width: 4,
+    height: 4,
+    borderRadius: 2,
   },
   modeRow: {
     flexDirection: 'row',
