@@ -5,6 +5,7 @@ import { supabase } from './supabaseClient';
 export type Profile = {
   id: string;
   name: string | null;
+  age: number | null;
   email: string | null;
   avatar_url: string | null;
   created_at: string;
@@ -15,7 +16,8 @@ export type OnboardingData = {
   user_id: string;
   quiz_answers: Record<string, string | number>;
   affirmation: string | null;
-  notification_prefs: { budget_reminders: boolean; cooking_ideas: boolean };
+  savings_goal: string | null;
+  notification_prefs: Record<string, unknown>;
   completed_at: string | null;
 };
 
@@ -76,6 +78,18 @@ export type WeeklyStat = {
   streak_days: number;
 };
 
+export type ChatHistoryMessage = {
+  id: string;
+  role: 'user' | 'assistant';
+  content: string;
+};
+
+export type ChatHistoryRow = {
+  user_id: string;
+  messages: ChatHistoryMessage[];
+  updated_at: string;
+};
+
 // ── Helpers ────────────────────────────────────────────────
 
 async function getUserId(): Promise<string | null> {
@@ -96,7 +110,35 @@ export async function getProfile(): Promise<Profile | null> {
   return data ?? null;
 }
 
-export async function updateProfile(updates: Partial<Pick<Profile, 'name' | 'avatar_url'>>): Promise<void> {
+// ── Chat history ────────────────────────────────────────────
+
+export async function getChatHistory(): Promise<ChatHistoryRow | null> {
+  const userId = await getUserId();
+  if (!userId) return null;
+  const { data } = await supabase
+    .from('chat_history')
+    .select('*')
+    .eq('user_id', userId)
+    .single();
+  return data ?? null;
+}
+
+export async function upsertChatHistory(messages: ChatHistoryMessage[]): Promise<void> {
+  const userId = await getUserId();
+  if (!userId) return;
+  await supabase
+    .from('chat_history')
+    .upsert(
+      {
+        user_id: userId,
+        messages,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: 'user_id' },
+    );
+}
+
+export async function updateProfile(updates: Partial<Pick<Profile, 'name' | 'avatar_url' | 'age'>>): Promise<void> {
   const userId = await getUserId();
   if (!userId) return;
   await supabase.from('profiles').update(updates).eq('id', userId);
@@ -107,9 +149,10 @@ export async function updateProfile(updates: Partial<Pick<Profile, 'name' | 'ava
 export async function saveOnboardingData(payload: {
   quiz_answers: Record<string, string | number>;
   name: string;
+  age: number | null;
+  savings_goal: string | null;
   weekly_budget: number;
   affirmation: string;
-  notification_prefs: { budget_reminders: boolean; cooking_ideas: boolean };
   selected_app_count: number;
   blocking_mode: 'gentle' | 'moderate' | 'precautionary';
 }): Promise<boolean> {
@@ -119,7 +162,14 @@ export async function saveOnboardingData(payload: {
   // 1. Upsert profile name
   const { error: profileError } = await supabase
     .from('profiles')
-    .upsert({ id: userId, name: payload.name.trim() || null }, { onConflict: 'id' });
+    .upsert(
+      {
+        id: userId,
+        name: payload.name.trim() || null,
+        age: payload.age,
+      },
+      { onConflict: 'id' },
+    );
   if (profileError) console.warn('Profile save error:', profileError.message);
 
   // 2. Upsert onboarding data
@@ -130,7 +180,7 @@ export async function saveOnboardingData(payload: {
         user_id: userId,
         quiz_answers: payload.quiz_answers,
         affirmation: payload.affirmation.trim() || null,
-        notification_prefs: payload.notification_prefs,
+        savings_goal: payload.savings_goal?.trim() || null,
         completed_at: new Date().toISOString(),
       },
       { onConflict: 'user_id' },
@@ -164,6 +214,17 @@ export async function saveOnboardingData(payload: {
   if (blockingError) console.warn('Blocking settings save error:', blockingError.message);
 
   return !profileError && !onboardingError && !budgetError && !blockingError;
+}
+
+export async function getOnboardingData(): Promise<OnboardingData | null> {
+  const userId = await getUserId();
+  if (!userId) return null;
+  const { data } = await supabase
+    .from('onboarding')
+    .select('*')
+    .eq('user_id', userId)
+    .maybeSingle();
+  return data ?? null;
 }
 
 // ── Budget ─────────────────────────────────────────────────
@@ -346,6 +407,7 @@ export async function getSubscription() {
 
 export type DashboardData = {
   profile: Profile | null;
+  onboarding: OnboardingData | null;
   budget: Budget | null;
   orders: Order[];
   blockingSettings: BlockingSettingsRow | null;
@@ -353,12 +415,13 @@ export type DashboardData = {
 };
 
 export async function loadDashboardData(): Promise<DashboardData> {
-  const [profile, budget, orders, blockingSettings, weeklyStats] = await Promise.all([
+  const [profile, onboarding, budget, orders, blockingSettings, weeklyStats] = await Promise.all([
     getProfile(),
+    getOnboardingData(),
     getBudget(),
     getOrders(100),
     getBlockingSettings(),
     getWeeklyStats(12),
   ]);
-  return { profile, budget, orders, blockingSettings, weeklyStats };
+  return { profile, onboarding, budget, orders, blockingSettings, weeklyStats };
 }

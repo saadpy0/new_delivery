@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AppState,
   Alert,
-  ImageBackground,
+  Linking,
   Modal,
   NativeModules,
   Pressable,
@@ -12,15 +12,17 @@ import {
   Text,
   TextInput,
   View,
-  Switch,
 } from 'react-native';
 import Purchases from 'react-native-purchases';
-import Svg, { Circle, Path } from 'react-native-svg';
-import ScreenTimeTest from './ScreenTimeTest';
+import Svg, { Circle, Path, Rect } from 'react-native-svg';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { OPENAI_API_KEY } from '@env';
 import OverrideFlow from './OverrideFlow';
-import { blockingService, type BlockType, type BlockMode, type BlockingSettings, type BlockState, type ScheduleConfig, type PerModeCooldown } from './BlockingService';
-import { loadDashboardData, getSubscription, addOrder as addOrderToDb, deleteOrder as deleteOrderFromDb, updateBudget, updateBlockingSettings, updateProfile, type Order as DbOrder } from './DataService';
+import { blockingService, type BlockType, type BlockMode, type BlockingSettings, type BlockState, type PerModeCooldown } from './BlockingService';
+import { loadDashboardData, getSubscription, getChatHistory, upsertChatHistory, addOrder as addOrderToDb, deleteOrder as deleteOrderFromDb, updateBudget, updateBlockingSettings, updateProfile, type Order as DbOrder } from './DataService';
 import { supabase } from './supabaseClient';
+
+const { NotificationPermissionManager } = NativeModules;
 
 const COLORS = {
   ink: '#1A1A2E',
@@ -34,59 +36,47 @@ const COLORS = {
   border: '#E6E1DB',
 };
 
-// Per-mode theme palettes
-const MODE_THEMES: Record<BlockMode, {
-  bg: string; cardBg: string; accent: string; accentSoft: string;
-  text: string; muted: string; border: string; tabBg: string;
-  selectorActive: string; selectorText: string;
-}> = {
-  gentle: {
-    bg: '#1A1028',
-    cardBg: '#251838',
-    accent: '#E85454',
-    accentSoft: '#3D1F2E',
-    text: '#FFFFFF',
-    muted: '#9B8AAE',
-    border: '#3A2850',
-    tabBg: '#1E1430',
-    selectorActive: '#E85454',
-    selectorText: '#FFFFFF',
-  },
-  moderate: {
-    bg: '#0F1B3D',
-    cardBg: '#162450',
-    accent: '#4A90D9',
-    accentSoft: '#1A2E5C',
-    text: '#FFFFFF',
-    muted: '#7B8DB5',
-    border: '#233566',
-    tabBg: '#0D1733',
-    selectorActive: '#4A90D9',
-    selectorText: '#FFFFFF',
-  },
-  precautionary: {
-    bg: '#E8F4FD',
-    cardBg: '#FFFFFF',
-    accent: '#2BA5D6',
-    accentSoft: '#D0ECFA',
-    text: '#1A1A2E',
-    muted: '#6B8FA8',
-    border: '#B8DDF0',
-    tabBg: '#D5EEFA',
-    selectorActive: '#2BA5D6',
-    selectorText: '#FFFFFF',
-  },
-};
 
 const MODE_LABELS: Record<BlockMode, { label: string; emoji: string; desc: string }> = {
-  gentle: { label: 'Gentle', emoji: '🔥', desc: 'Blocks when over budget. Hard to override.' },
-  moderate: { label: 'Moderate', emoji: '🛡️', desc: 'Blocks when over budget. Easier override.' },
-  precautionary: { label: 'Precaution', emoji: '❄️', desc: 'Blocks even under budget. Quick friction.' },
+  gentle: { label: 'Guarded', emoji: '🔥', desc: 'Blocks when over budget. Hardest override.' },
+  moderate: { label: 'Balanced', emoji: '🛡️', desc: 'Blocks when over budget. Faster override.' },
+  precautionary: { label: 'Preventive', emoji: '❄️', desc: 'Blocks even under budget. Lightest friction.' },
 };
 
-type TabKey = 'home' | 'orders' | 'reports' | 'bridge' | 'settings';
-type SheetKey = 'budget' | 'blocker' | 'opportunity' | 'reminders' | null;
+type TabKey = 'home' | 'orders' | 'reports' | 'chat' | 'settings';
+type SheetKey = 'budget' | 'opportunity' | null;
+type SettingsScreenKey = 'account' | 'blocker' | 'faq' | 'contact' | 'privacy' | 'terms' | null;
 const PRO_ENTITLEMENT_ID = 'undelivery Pro';
+const OPENAI_API_KEY_PLACEHOLDER = 'OPENAI_API_KEY_HERE';
+const APP_STORE_REVIEW_URL = 'https://apps.apple.com/app/id0000000000?action=write-review';
+const APP_STORE_FALLBACK_URL = 'https://apps.apple.com/';
+const HOME_WEEK_START_KEY = '@quitbite_home_week_start_v1';
+
+type ChatMessage = {
+  id: string;
+  role: 'user' | 'assistant';
+  content: string;
+};
+
+const normalizeAssistantText = (raw: string) => {
+  return raw
+    .replace(/\*\*(.*?)\*\*/g, '$1')
+    .replace(/__(.*?)__/g, '$1')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/^#{1,6}\s*/gm, '')
+    .replace(/^\s*[-*]\s+/gm, '• ')
+    .replace(/^\s*\d+\.\s+/gm, '• ')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+};
+
+const DEFAULT_CHAT_MESSAGES: ChatMessage[] = [
+  {
+    id: 'assistant-welcome',
+    role: 'assistant',
+    content: "Hey — I can help you reduce delivery spend, plan quick meals, and stay on budget. What's one thing you want help with right now?",
+  },
+];
 
 const NavIcon = ({ tab, color }: { tab: TabKey; color: string }) => {
   if (tab === 'home') {
@@ -128,7 +118,7 @@ const NavIcon = ({ tab, color }: { tab: TabKey; color: string }) => {
     );
   }
 
-  if (tab === 'bridge') {
+  if (tab === 'chat') {
     return (
       <Svg width={22} height={22} viewBox="0 0 24 24" fill="none">
         <Path
@@ -183,21 +173,45 @@ const GOALS: Goal[] = [
 ];
 
 const DELIVERY_APPS = ['Uber Eats', 'Just Eat', 'DoorDash', 'Deliveroo', 'GrubHub', 'Postmates'] as const;
+const WEEKDAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'] as const;
+const ORDER_EMOJIS = ['🍔', '🍕', '🍟', '🌯', '🍜', '🍣', '🥗', '🌮', '🍛', '🥪', '🍗', '🍱'] as const;
+
+const getOrderEmoji = (vendor: string, amount: number) => {
+  const seed = `${vendor}-${amount.toFixed(2)}`;
+  let hash = 0;
+  for (let i = 0; i < seed.length; i += 1) {
+    hash = (hash << 5) - hash + seed.charCodeAt(i);
+    hash |= 0;
+  }
+  return ORDER_EMOJIS[Math.abs(hash) % ORDER_EMOJIS.length];
+};
+
+const getWeekStartIso = (dateLike: string | Date) => {
+  const date = new Date(dateLike);
+  const normalized = new Date(date);
+  const dayIndex = normalized.getDay();
+  normalized.setDate(normalized.getDate() - dayIndex);
+  normalized.setHours(0, 0, 0, 0);
+  return normalized.toISOString().slice(0, 10);
+};
 
 export default function MainDashboard({
   email,
   pendingOverride,
   onOverrideHandled,
   onSignOut,
-  onReturnToWelcome,
 }: MainDashboardProps) {
   const [activeTab, setActiveTab] = useState<TabKey>('home');
   const [activeSheet, setActiveSheet] = useState<SheetKey>(null);
-  const [showScreenTimeTest, setShowScreenTimeTest] = useState(false);
+  const [activeSettingsScreen, setActiveSettingsScreen] = useState<SettingsScreenKey>(null);
   const [showOverrideFlow, setShowOverrideFlow] = useState(false);
   const [blockSettings, setBlockSettings] = useState<BlockingSettings>(blockingService.getSettings());
   const [blockState, setBlockState] = useState<BlockState>(blockingService.getState());
   const [userName, setUserName] = useState('');
+  const [accountNameInput, setAccountNameInput] = useState('');
+  const [accountAgeInput, setAccountAgeInput] = useState('');
+  const [savedAccountAge, setSavedAccountAge] = useState('');
+  const [savingsGoals, setSavingsGoals] = useState<string[]>([]);
   const [weeklyBudget, setWeeklyBudget] = useState(120);
   const [orders, setOrders] = useState<Order[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -206,9 +220,16 @@ export default function MainDashboard({
   const [showAddOrderModal, setShowAddOrderModal] = useState(false);
   const [showVendorMenu, setShowVendorMenu] = useState(false);
   const [selectedAppLabels, setSelectedAppLabels] = useState<string[]>([]);
-  const [budgetReminders, setBudgetReminders] = useState(true);
-  const [cookingIdeas, setCookingIdeas] = useState(true);
+  const [lastOverrideAt, setLastOverrideAt] = useState<number | null>(null);
+  const lastAppStateRef = useRef(AppState.currentState);
+  const [currentWeekStartIso, setCurrentWeekStartIso] = useState(getWeekStartIso(new Date()));
+  const [homeWeekStartIso, setHomeWeekStartIso] = useState(getWeekStartIso(new Date()));
   const [opportunityAmount, setOpportunityAmount] = useState('22');
+  const [chatInput, setChatInput] = useState('');
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>(DEFAULT_CHAT_MESSAGES);
+  const [chatHistoryReady, setChatHistoryReady] = useState(false);
+  const [isChatSending, setIsChatSending] = useState(false);
+  const [chatError, setChatError] = useState<string | null>(null);
   const [subscriptionPlan, setSubscriptionPlan] = useState<'weekly' | 'monthly' | 'yearly' | 'none'>('none');
   const [trialActive, setTrialActive] = useState(false);
   const [subscriptionPeriodType, setSubscriptionPeriodType] = useState('unknown');
@@ -230,12 +251,17 @@ export default function MainDashboard({
     return d.toLocaleDateString();
   };
 
+  const ordersThisWeek = useMemo(
+    () => orders.filter((order) => getWeekStartIso(order.ordered_at) === currentWeekStartIso),
+    [orders, currentWeekStartIso],
+  );
+
   const totalSpend = useMemo(
-    () => orders.reduce((sum, order) => sum + order.amount, 0),
-    [orders],
+    () => ordersThisWeek.reduce((sum, order) => sum + order.amount, 0),
+    [ordersThisWeek],
   );
   const remaining = Math.max(weeklyBudget - totalSpend, 0);
-  const budgetProgress = Math.min(totalSpend / weeklyBudget, 1);
+  const budgetProgress = Math.min(totalSpend / Math.max(weeklyBudget, 1), 1);
 
   const getPlanFromProductId = (productId?: string | null): 'weekly' | 'monthly' | 'yearly' | 'none' => {
     const id = String(productId ?? '').toLowerCase();
@@ -260,6 +286,23 @@ export default function MainDashboard({
         : null,
     );
   };
+
+  const scheduleOverrideOrderPrompt = useCallback(async () => {
+    if (!NotificationPermissionManager?.scheduleOverrideOrderPrompt || !lastOverrideAt) return;
+    const elapsedMs = Date.now() - lastOverrideAt;
+    const maxMs = 10 * 60 * 1000;
+    if (elapsedMs > maxMs) return;
+    const delaySeconds = 5;
+    try {
+      if (NotificationPermissionManager?.requestAuthorization) {
+        const granted = await NotificationPermissionManager.requestAuthorization();
+        if (!granted) return;
+      }
+      await NotificationPermissionManager.scheduleOverrideOrderPrompt(delaySeconds);
+    } catch (error) {
+      console.warn('Failed to schedule override order prompt', error);
+    }
+  }, [lastOverrideAt]);
 
   const refreshSubscriptionFromRevenueCat = useCallback(async () => {
     const { data, error } = await supabase.auth.getUser();
@@ -320,9 +363,51 @@ export default function MainDashboard({
   }, []);
 
   useEffect(() => {
+    const syncWeeklyBoundaries = async () => {
+      const weekStart = getWeekStartIso(new Date());
+      setCurrentWeekStartIso(weekStart);
+      try {
+        const savedHomeWeekStart = await AsyncStorage.getItem(HOME_WEEK_START_KEY);
+        if (!savedHomeWeekStart) {
+          await AsyncStorage.setItem(HOME_WEEK_START_KEY, weekStart);
+          setHomeWeekStartIso(weekStart);
+          return;
+        }
+
+        if (savedHomeWeekStart !== weekStart) {
+          await AsyncStorage.setItem(HOME_WEEK_START_KEY, weekStart);
+          setHomeWeekStartIso(weekStart);
+          return;
+        }
+        setHomeWeekStartIso(savedHomeWeekStart);
+      } catch (error) {
+        console.warn('Failed to sync weekly boundaries', error);
+      }
+    };
+
+    void syncWeeklyBoundaries();
+    const interval = setInterval(() => {
+      void syncWeeklyBoundaries();
+    }, 60 * 1000);
+
+    return () => clearInterval(interval);
+  }, []);
+
+  useEffect(() => {
     const subscription = AppState.addEventListener('change', (state) => {
+      const previousState = lastAppStateRef.current;
+      const movedToBackground = previousState === 'active' && (state === 'inactive' || state === 'background');
+      if (lastOverrideAt && movedToBackground) {
+        void scheduleOverrideOrderPrompt();
+      }
+      lastAppStateRef.current = state;
+
       if (state === 'active') {
+        if (NotificationPermissionManager?.cancelOverrideOrderPrompt) {
+          void NotificationPermissionManager.cancelOverrideOrderPrompt();
+        }
         setActiveTab('home');
+        setCurrentWeekStartIso(getWeekStartIso(new Date()));
         void refreshSubscriptionFromRevenueCat().then(async () => {
           const latestSubscription = await getSubscription();
           applySubscriptionDebugState(latestSubscription);
@@ -330,7 +415,11 @@ export default function MainDashboard({
       }
     });
     return () => subscription.remove();
-  }, [refreshSubscriptionFromRevenueCat]);
+  }, [refreshSubscriptionFromRevenueCat, lastOverrideAt, scheduleOverrideOrderPrompt]);
+
+  useEffect(() => {
+    setAccountNameInput(userName);
+  }, [userName]);
 
   // ── Initialize BlockingService + load Supabase data on mount ──
   useEffect(() => {
@@ -344,6 +433,18 @@ export default function MainDashboard({
       try {
         const data = await loadDashboardData();
         if (data.profile?.name) setUserName(data.profile.name);
+        setAccountNameInput(data.profile?.name ?? '');
+        const profileAge = data.profile?.age;
+        const normalizedAge = typeof profileAge === 'number'
+          ? String(Math.min(120, Math.max(10, Math.trunc(profileAge))))
+          : '';
+        setAccountAgeInput(normalizedAge);
+        setSavedAccountAge(normalizedAge);
+        const parsedGoals = String(data.onboarding?.savings_goal ?? '')
+          .split(',')
+          .map((goal) => goal.trim())
+          .filter((goal) => goal.length > 0);
+        setSavingsGoals(parsedGoals);
         if (data.budget) setWeeklyBudget(data.budget.weekly_limit);
         if (data.orders.length > 0) {
           setOrders(data.orders.map((o) => ({
@@ -357,17 +458,24 @@ export default function MainDashboard({
           await blockingService.updateSettings({
             enabled: data.blockingSettings.enabled,
             mode: data.blockingSettings.mode,
-            superStrict: data.blockingSettings.super_strict,
+            superStrict: false,
             cooldowns: {
               gentle: data.blockingSettings.cooldown_gentle,
               moderate: data.blockingSettings.cooldown_moderate,
               precautionary: data.blockingSettings.cooldown_precautionary,
             },
-            penaltyEnabled: data.blockingSettings.penalty_enabled,
-            penaltyAmount: data.blockingSettings.penalty_amount,
+            penaltyEnabled: false,
+            penaltyAmount: 0,
             selectedAppCount: data.blockingSettings.selected_app_count,
           });
           setBlockSettings(blockingService.getSettings());
+        }
+
+        const history = await getChatHistory();
+        if (history?.messages?.length) {
+          setChatMessages(history.messages);
+        } else {
+          setChatMessages(DEFAULT_CHAT_MESSAGES);
         }
 
         await refreshSubscriptionFromRevenueCat();
@@ -376,11 +484,17 @@ export default function MainDashboard({
       } catch (e) {
         console.warn('Failed to load dashboard data:', e);
       } finally {
+        setChatHistoryReady(true);
         setIsLoading(false);
       }
     };
     void init();
   }, [refreshSubscriptionFromRevenueCat]);
+
+  useEffect(() => {
+    if (!chatHistoryReady) return;
+    void upsertChatHistory(chatMessages);
+  }, [chatMessages, chatHistoryReady]);
 
   // ── Auto-open override flow when deep link arrives ──
   useEffect(() => {
@@ -409,18 +523,18 @@ export default function MainDashboard({
     void updateBlockingSettings({
       enabled: s.enabled,
       mode: s.mode,
-      super_strict: s.superStrict,
+      super_strict: false,
       cooldown_gentle: s.cooldowns.gentle,
       cooldown_moderate: s.cooldowns.moderate,
       cooldown_precautionary: s.cooldowns.precautionary,
-      penalty_enabled: s.penaltyEnabled,
-      penalty_amount: s.penaltyAmount,
+      penalty_enabled: false,
+      penalty_amount: 0,
       selected_app_count: s.selectedAppCount,
-      schedule_enabled: s.schedule.enabled,
-      schedule_start_hour: s.schedule.startHour,
-      schedule_start_min: s.schedule.startMinute,
-      schedule_end_hour: s.schedule.endHour,
-      schedule_end_min: s.schedule.endMinute,
+      schedule_enabled: false,
+      schedule_start_hour: 11,
+      schedule_start_min: 0,
+      schedule_end_hour: 14,
+      schedule_end_min: 0,
     });
   }, []);
 
@@ -447,39 +561,44 @@ export default function MainDashboard({
     refreshBlockState();
   }, [totalSpend, weeklyBudget, refreshBlockState]);
 
-  const handleToggleSuperStrict = useCallback(async (value: boolean) => {
-    await blockingService.updateSettings({ superStrict: value });
-    refreshBlockState();
-  }, [refreshBlockState]);
-
-  const handleTogglePenalty = useCallback(async (value: boolean) => {
-    await blockingService.updateSettings({ penaltyEnabled: value });
-    refreshBlockState();
-  }, [refreshBlockState]);
-
   const handleSetCooldown = useCallback(async (mode: BlockMode, value: string) => {
     const mins = Math.max(0, Number.parseInt(value || '0', 10));
     await blockingService.updateSettings({ cooldowns: { [mode]: mins } as any });
     refreshBlockState();
   }, [refreshBlockState]);
 
-  const handleSetPenaltyAmount = useCallback(async (value: string) => {
-    const amount = Math.max(1, Number.parseInt(value || '5', 10));
-    await blockingService.updateSettings({ penaltyAmount: amount });
-    refreshBlockState();
-  }, [refreshBlockState]);
+  const handleRateApp = useCallback(async () => {
+    const targetUrl = APP_STORE_REVIEW_URL.includes('id0000000000') ? APP_STORE_FALLBACK_URL : APP_STORE_REVIEW_URL;
+    const supported = await Linking.canOpenURL(targetUrl);
+    if (!supported) {
+      Alert.alert('Unavailable', 'Unable to open the App Store right now.');
+      return;
+    }
+    await Linking.openURL(targetUrl);
+  }, []);
 
-  const handleToggleSchedule = useCallback(async (value: boolean) => {
-    await blockingService.setSchedule({ enabled: value });
-    refreshBlockState();
-  }, [refreshBlockState]);
+  const handleSaveAccountInfo = useCallback(async () => {
+    const trimmedName = accountNameInput.trim();
+    const normalizedAge = accountAgeInput.replace(/[^0-9]/g, '').slice(0, 3);
+    if (normalizedAge && (Number(normalizedAge) < 10 || Number(normalizedAge) > 120)) {
+      Alert.alert('Invalid age', 'Please enter a valid age between 10 and 120.');
+      return;
+    }
 
-  const handleSetScheduleTime = useCallback(async (field: 'startHour' | 'startMinute' | 'endHour' | 'endMinute', value: string) => {
-    const num = Number.parseInt(value || '0', 10);
-    const clamped = field.includes('Hour') ? Math.min(23, Math.max(0, num)) : Math.min(59, Math.max(0, num));
-    await blockingService.setSchedule({ [field]: clamped });
-    refreshBlockState();
-  }, [refreshBlockState]);
+    try {
+      await updateProfile({
+        name: trimmedName || null,
+        age: normalizedAge ? Number(normalizedAge) : null,
+      });
+      setUserName(trimmedName);
+
+      setAccountAgeInput(normalizedAge);
+      setSavedAccountAge(normalizedAge);
+      Alert.alert('Saved', 'Your account details were updated.');
+    } catch (e: any) {
+      Alert.alert('Error', e?.message ?? 'Failed to save account details.');
+    }
+  }, [accountNameInput, accountAgeInput]);
 
   const handleDeleteOrder = async (orderId: string) => {
     setOrders((prev) => prev.filter((o) => o.id !== orderId));
@@ -502,144 +621,160 @@ export default function MainDashboard({
     setShowAddOrderModal(false);
   };
 
-  const renderHeader = (title: string, subtitle?: string) => (
-    <View style={styles.header}>
-      <View>
-        <Text style={styles.headerTitle}>{title}</Text>
-        {subtitle ? <Text style={styles.headerSubtitle}>{subtitle}</Text> : null}
-      </View>
-      <Pressable onPress={() => setActiveSheet('reminders')} style={styles.headerChip}>
-        <Text style={styles.headerChipText}>Reminders</Text>
-      </Pressable>
-    </View>
-  );
+  const sendChatMessageWithText = useCallback(async (rawText: string) => {
+    const text = rawText.trim();
+    if (!text || isChatSending) return;
 
-  const theme = MODE_THEMES[blockSettings.mode];
+    if (!OPENAI_API_KEY || OPENAI_API_KEY === OPENAI_API_KEY_PLACEHOLDER) {
+      Alert.alert(
+        'OpenAI key missing',
+        'Set OPENAI_API_KEY in your .env file to use the chatbot tab.',
+      );
+      return;
+    }
+
+    const userMessage: ChatMessage = {
+      id: `user-${Date.now()}`,
+      role: 'user',
+      content: text,
+    };
+
+    const recentHistory = [...chatMessages, userMessage].slice(-12);
+    const hiddenContext = `Weekly budget: $${weeklyBudget}. Total spend: $${totalSpend.toFixed(2)}. Orders this week: ${orders.length}. Current block mode: ${blockSettings.mode}.`;
+
+    setChatInput('');
+    setChatError(null);
+    setChatMessages((prev) => [...prev, userMessage]);
+    setIsChatSending(true);
+
+    try {
+      const response = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${OPENAI_API_KEY}`,
+        },
+        body: JSON.stringify({
+          model: 'gpt-4o-mini',
+          temperature: 0.6,
+          messages: [
+            {
+              role: 'system',
+              content: `You are an accountability and budgeting coach for food delivery spending. Keep responses concise, practical, and action-oriented. Give direct next steps.\n${hiddenContext}`,
+            },
+            ...recentHistory.map((m) => ({
+              role: m.role,
+              content: m.content,
+            })),
+          ],
+        }),
+      });
+
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data?.error?.message || 'Chat request failed.');
+      }
+
+      const assistantTextRaw = data?.choices?.[0]?.message?.content;
+      const assistantText =
+        (typeof assistantTextRaw === 'string' ? assistantTextRaw.trim() : '') ||
+        'I could not generate a response. Please try again.';
+
+      const assistantMessage: ChatMessage = {
+        id: `assistant-${Date.now()}`,
+        role: 'assistant',
+        content: normalizeAssistantText(assistantText),
+      };
+
+      setChatMessages((prev) => [...prev, assistantMessage]);
+    } catch (err: any) {
+      const message = err?.message || 'Something went wrong while contacting OpenAI.';
+      setChatError(message);
+    } finally {
+      setIsChatSending(false);
+    }
+  }, [chatMessages, isChatSending, weeklyBudget, totalSpend, orders.length, blockSettings.mode]);
+
+  const sendChatMessage = useCallback(async () => {
+    await sendChatMessageWithText(chatInput);
+  }, [chatInput, sendChatMessageWithText]);
+
+  const handleHealthyOptionChosen = useCallback((alternativeTitle: string) => {
+    setShowOverrideFlow(false);
+    setActiveTab('chat');
+    void sendChatMessageWithText(
+      `I chose this healthier option instead of ordering delivery: ${alternativeTitle}. Give me a simple step-by-step recipe to cook it now, with ingredients, prep, and a quick 15-minute version if possible.`
+    );
+  }, [sendChatMessageWithText]);
+
+  const handleClearChatHistory = useCallback(() => {
+    Alert.alert(
+      'Clear chat history?',
+      'This will remove all messages in Chat Coach for this account.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Clear',
+          style: 'destructive',
+          onPress: () => {
+            setChatMessages(DEFAULT_CHAT_MESSAGES);
+            setChatInput('');
+            setChatError(null);
+          },
+        },
+      ],
+    );
+  }, []);
+
+
   const overBudget = totalSpend >= weeklyBudget;
 
   // Under-budget recommendation: if not on precautionary, suggest it
   const showPrecauRecommendation = !overBudget && blockSettings.mode !== 'precautionary';
   // Over-budget: precautionary is locked
   const precauLocked = overBudget;
-  const homePalette = {
-    bg: '#FFFFFF',
-    panel: '#11141B',
-    panelSoft: '#1A1E28',
-    text: '#F6F8FF',
-    muted: '#8E96AC',
-    orange: '#FF4D2D',
-    blue: '#4A69FF',
-    white: '#F3F4F8',
-  };
-  const modeAccent: Record<BlockMode, string> = {
-    gentle: homePalette.orange,
-    moderate: homePalette.blue,
-    precautionary: homePalette.white,
-  };
   const modeVisuals: Record<BlockMode, {
-    modeCardBase: string;
-    modeCardGlow: string;
-    modeCardTint: string;
-    modeCardText: string;
-    modeCardSubText: string;
-    orderBg: string;
-    orderBorder: string;
-    orderIconBg: string;
-    orderAmount: string;
-    navBg: string;
-    navBorder: string;
-    navText: string;
-    navActiveBg: string;
-    navActiveText: string;
-    action: string;
+    modeCardBase: string; modeCardGlow: string; modeCardTint: string;
+    modeCardText: string; modeCardSubText: string;
+    orderBg: string; orderBorder: string; orderIconBg: string; orderAmount: string;
+    navBg: string; navBorder: string; navText: string; navActiveBg: string; navActiveText: string;
+    action: string; cardSurface: string; cardBorder: string;
+    labelColor: string; valueColor: string; dimText: string; progressTrack: string; accentGlow: string;
   }> = {
     gentle: {
-      modeCardBase: '#20100D',
-      modeCardGlow: '#6E2A1E',
-      modeCardTint: '#9F3E2A',
-      modeCardText: '#FFFFFF',
-      modeCardSubText: '#F3C2B8',
-      orderBg: '#FFF3EE',
-      orderBorder: '#FFD8CC',
-      orderIconBg: '#FFE8E0',
-      orderAmount: '#D84A27',
-      navBg: '#1A0F0D',
-      navBorder: '#3C231D',
-      navText: '#D9AFA5',
-      navActiveBg: '#FF5E37',
-      navActiveText: '#FFFFFF',
-      action: '#D84A27',
+      modeCardBase: '#100403', modeCardGlow: '#7A2818', modeCardTint: '#C04428',
+      modeCardText: '#FFF5F2', modeCardSubText: '#FFB8A0',
+      orderBg: '#321410', orderBorder: '#6A2C1C', orderIconBg: '#3E1A12', orderAmount: '#FF6B42',
+      navBg: '#0C0302', navBorder: '#3E1A12', navText: '#D4907E', navActiveBg: '#E8512E', navActiveText: '#FFFFFF',
+      action: '#E8512E', cardSurface: '#301410', cardBorder: '#6A2C1C',
+      labelColor: '#D4907E', valueColor: '#FFF5F2', dimText: '#CC8070', progressTrack: '#3E1A12', accentGlow: '#FF6B42',
     },
     moderate: {
-      modeCardBase: '#10172A',
-      modeCardGlow: '#233C82',
-      modeCardTint: '#3658C9',
-      modeCardText: '#FFFFFF',
-      modeCardSubText: '#C9D6FF',
-      orderBg: '#EFF3FF',
-      orderBorder: '#CCD7FF',
-      orderIconBg: '#DEE7FF',
-      orderAmount: '#2D4EC1',
-      navBg: '#0F1628',
-      navBorder: '#243866',
-      navText: '#AFC1FA',
-      navActiveBg: '#4E6DFF',
-      navActiveText: '#FFFFFF',
-      action: '#2D4EC1',
+      modeCardBase: '#050A18', modeCardGlow: '#1C3272', modeCardTint: '#2E52CC',
+      modeCardText: '#EEF2FF', modeCardSubText: '#A8BEFF',
+      orderBg: '#172448', orderBorder: '#2E4490', orderIconBg: '#1C2E60', orderAmount: '#6B8FFF',
+      navBg: '#040814', navBorder: '#1C2E60', navText: '#8AABE8', navActiveBg: '#3A5EFF', navActiveText: '#FFFFFF',
+      action: '#3A5EFF', cardSurface: '#162248', cardBorder: '#2E4490',
+      labelColor: '#8AABE8', valueColor: '#EEF2FF', dimText: '#7A96D4', progressTrack: '#1C2E60', accentGlow: '#4A6EFF',
     },
     precautionary: {
-      modeCardBase: '#0D1D20',
-      modeCardGlow: '#1D5C62',
-      modeCardTint: '#2F8990',
-      modeCardText: '#EEFFFF',
-      modeCardSubText: '#BCE8EC',
-      orderBg: '#ECFAFB',
-      orderBorder: '#C8ECEF',
-      orderIconBg: '#DCF5F7',
-      orderAmount: '#1A6F77',
-      navBg: '#0D1B1E',
-      navBorder: '#23484D',
-      navText: '#A6D7DC',
-      navActiveBg: '#2B8A92',
-      navActiveText: '#F4FFFF',
-      action: '#1A6F77',
+      modeCardBase: '#030C0E', modeCardGlow: '#0E4C5C', modeCardTint: '#1A7A84',
+      modeCardText: '#E8FEFF', modeCardSubText: '#80D8E0',
+      orderBg: '#103038', orderBorder: '#205E70', orderIconBg: '#123038', orderAmount: '#2EC4D0',
+      navBg: '#02090B', navBorder: '#123038', navText: '#60B8C4', navActiveBg: '#1A8A94', navActiveText: '#E8FEFF',
+      action: '#1A8A94', cardSurface: '#0F3038', cardBorder: '#205E70',
+      labelColor: '#60B8C4', valueColor: '#E8FEFF', dimText: '#58AABC', progressTrack: '#123038', accentGlow: '#2EC4D0',
     },
   };
-  const activeModeAccent = modeAccent[blockSettings.mode];
   const modeVisual = modeVisuals[blockSettings.mode];
   const homeActionColor = modeVisual.action;
-  const ordersHeadingColor = '#FFFFFF';
-  const ordersSubColor =
-    blockSettings.mode === 'precautionary'
-      ? '#0F2740'
-      : blockSettings.mode === 'moderate'
-        ? '#0F2740'
-        : '#B8C8E8';
-  const ordersCountColor =
-    blockSettings.mode === 'gentle'
-      ? '#D5C4E9'
-      : blockSettings.mode === 'moderate'
-        ? '#6D84AE'
-        : '#3F6077';
-  const orderActionColor = blockSettings.mode === 'precautionary' ? modeVisual.action : activeModeAccent;
-  const orderFieldLabelColor =
-    blockSettings.mode === 'precautionary'
-      ? '#D6EDF8'
-      : blockSettings.mode === 'moderate'
-        ? '#D5E4FF'
-        : '#B8C8E8';
-  const orderFieldBg = blockSettings.mode === 'precautionary' ? '#F3F8FD' : '#EAF1FF';
-  const orderFieldText = '#213B61';
-  const orderPlaceholder = '#8AA0C4';
-  const orderModalTitleColor = '#F4F8FF';
-  const orderModalCloseColor = blockSettings.mode === 'precautionary' ? '#4E6D86' : '#C0CDE9';
-  const homeBackgroundSource =
-    blockSettings.mode === 'gentle'
-      ? require('./other_imgs/gentlebg.png')
-      : blockSettings.mode === 'precautionary'
-        ? require('./other_imgs/precaubg.png')
-        : require('./other_imgs/moderate_bg.png');
-
+  const orderActionColor = modeVisual.action;
+  const orderFieldLabelColor = modeVisual.modeCardSubText;
+  const orderFieldBg = modeVisual.orderBg;
+  const orderFieldText = modeVisual.valueColor;
+  const orderPlaceholder = modeVisual.dimText;
+  const orderModalTitleColor = modeVisual.valueColor;
+  const orderModalCloseColor = modeVisual.labelColor;
   const openModeSwitchOptions = () => {
     const availableModes = (['moderate', 'precautionary'] as BlockMode[])
       .filter((m) => !(m === 'precautionary' && precauLocked))
@@ -668,6 +803,7 @@ export default function MainDashboard({
 
   const renderModeSelector = () => {
     const modeLabel = MODE_LABELS[blockSettings.mode].label;
+    const modeEmoji = MODE_LABELS[blockSettings.mode].emoji;
     const cooldown = blockSettings.cooldowns[blockSettings.mode];
     const modeDesc = MODE_LABELS[blockSettings.mode].desc;
 
@@ -676,353 +812,205 @@ export default function MainDashboard({
         onLongPress={openModeSwitchOptions}
         delayLongPress={280}
         style={{
-          borderRadius: 24,
-          paddingHorizontal: 20,
-          paddingVertical: 22,
-          backgroundColor: modeVisual.modeCardBase,
+          borderRadius: 28,
+          paddingHorizontal: 22,
+          paddingVertical: 24,
+          backgroundColor: modeVisual.cardSurface,
           borderWidth: 1,
-          borderColor: modeVisual.modeCardTint,
+          borderColor: modeVisual.cardBorder,
           overflow: 'hidden',
-          marginBottom: 14,
+          marginBottom: 16,
         }}
       >
-        <View
-          pointerEvents="none"
-          style={{
-            position: 'absolute',
-            width: 220,
-            height: 220,
-            borderRadius: 110,
-            backgroundColor: modeVisual.modeCardGlow,
-            top: -120,
-            right: -40,
-            opacity: 0.55,
-          }}
-        />
-        <View
-          pointerEvents="none"
-          style={{
-            position: 'absolute',
-            width: 180,
-            height: 180,
-            borderRadius: 90,
-            backgroundColor: modeVisual.modeCardTint,
-            bottom: -100,
-            left: -60,
-            opacity: 0.5,
-          }}
-        />
-        <Text style={{ color: modeVisual.modeCardSubText, fontSize: 13, fontWeight: '700' }}>Current mode</Text>
-        <Text style={{ color: modeVisual.modeCardText, fontSize: 39, lineHeight: 44, fontWeight: '800', marginTop: 6 }}>
-          {modeLabel}
-        </Text>
-        <Text style={{ color: modeVisual.modeCardSubText, fontSize: 14, fontWeight: '500', marginTop: 6 }}>
-          {modeDesc}
-        </Text>
-        <Text style={{ color: modeVisual.modeCardSubText, fontSize: 15, fontWeight: '600', marginTop: 8 }}>
-          Cooldown: {cooldown} min
-        </Text>
-        <Text style={{ color: modeVisual.modeCardSubText, fontSize: 13, marginTop: 4 }}>
-          Hold to switch mode
-        </Text>
+        <View pointerEvents="none" style={{ position: 'absolute', width: 280, height: 280, borderRadius: 140, backgroundColor: modeVisual.modeCardTint, top: -160, right: -100, opacity: 0.22 }} />
+        <View pointerEvents="none" style={{ position: 'absolute', width: 180, height: 180, borderRadius: 90, backgroundColor: modeVisual.accentGlow, bottom: -90, left: -50, opacity: 0.16 }} />
+        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+          <Text style={{ color: modeVisual.labelColor, fontSize: 10, fontWeight: '700', letterSpacing: 1.6, textTransform: 'uppercase' }}>Active mode</Text>
+          <View style={{ backgroundColor: modeVisual.modeCardGlow, borderRadius: 999, paddingHorizontal: 10, paddingVertical: 4 }}>
+            <Text style={{ color: modeVisual.modeCardSubText, fontSize: 10, fontWeight: '700', letterSpacing: 0.8 }}>Hold to switch</Text>
+          </View>
+        </View>
+        <View style={{ flexDirection: 'row', alignItems: 'flex-end', gap: 8, marginBottom: 10 }}>
+          <Text style={{ color: modeVisual.modeCardText, fontSize: 44, lineHeight: 48, fontWeight: '800', letterSpacing: -1.5 }}>{modeLabel}</Text>
+          <Text style={{ fontSize: 26, marginBottom: 6 }}>{modeEmoji}</Text>
+        </View>
+        <Text style={{ color: modeVisual.modeCardSubText, fontSize: 13, fontWeight: '400', lineHeight: 19, marginBottom: 16 }}>{modeDesc}</Text>
+        <View style={{ flexDirection: 'row', gap: 8 }}>
+          <View style={{ backgroundColor: modeVisual.modeCardGlow, borderRadius: 10, paddingHorizontal: 10, paddingVertical: 5 }}>
+            <Text style={{ color: modeVisual.modeCardSubText, fontSize: 11, fontWeight: '700' }}>⏱ {cooldown}m cooldown</Text>
+          </View>
+          <View style={{ backgroundColor: modeVisual.modeCardGlow, borderRadius: 10, paddingHorizontal: 10, paddingVertical: 5 }}>
+            <Text style={{ color: modeVisual.modeCardSubText, fontSize: 11, fontWeight: '700' }}>
+              {blockState.isShieldActive ? '🔴 Blocking' : blockSettings.enabled ? '🟢 Active' : '⚪ Off'}
+            </Text>
+          </View>
+        </View>
       </Pressable>
     );
   };
 
   const renderHome = () => (
-    <ScrollView contentContainerStyle={[styles.scrollContent, { backgroundColor: 'transparent', paddingTop: 14 }]}> 
-      <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 20 }}>
-        <View style={{ flex: 1, flexDirection: 'row', alignItems: 'center' }}>
+    <ScrollView contentContainerStyle={[styles.scrollContent, { backgroundColor: 'transparent', paddingTop: 14 }]}>
+      {/* Top bar */}
+      <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 22 }}>
+        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
           <Pressable
             onPress={() => setActiveTab('settings')}
             style={{
-              width: 38,
-              height: 38,
-              borderRadius: 19,
-              backgroundColor: '#4A69FF',
+              width: 36,
+              height: 36,
+              borderRadius: 18,
+              backgroundColor: modeVisual.action,
               alignItems: 'center',
               justifyContent: 'center',
             }}
           >
-            <Text style={{ color: '#FFFFFF', fontSize: 12, fontWeight: '700' }}>
+            <Text style={{ color: '#FFFFFF', fontSize: 13, fontWeight: '800' }}>
               {(userName?.trim()?.[0] ?? 'U').toUpperCase()}
             </Text>
           </Pressable>
-          <Text style={{ marginLeft: 10, fontSize: 21, fontWeight: '500', color: '#151925' }}>
-            Hi {userName || 'there'}
-          </Text>
+          <View style={{ marginLeft: 10 }}>
+            <Text style={{ fontSize: 11, fontWeight: '600', color: modeVisual.labelColor, letterSpacing: 0.8, textTransform: 'uppercase' }}>Welcome back</Text>
+            <Text style={{ fontSize: 18, fontWeight: '700', color: modeVisual.valueColor, marginTop: 1 }}>
+              {userName || 'there'}
+            </Text>
+          </View>
         </View>
-
-        <Pressable
-          onPress={() => setActiveSheet('reminders')}
-          style={{
-            width: 38,
-            height: 38,
-            borderRadius: 19,
-            backgroundColor: '#FFFFFF',
-            borderWidth: 1,
-            borderColor: '#E4E8F1',
-            alignItems: 'center',
-            justifyContent: 'center',
-          }}
-        >
-          <Text style={{ color: '#151925', fontSize: 15 }}>🔔</Text>
-        </Pressable>
       </View>
 
       {renderModeSelector()}
 
-      <View
-        style={{
-          backgroundColor: '#FFFFFF',
-          borderRadius: 16,
-          paddingVertical: 10,
-          paddingHorizontal: 12,
-          marginBottom: 12,
-          borderWidth: 1,
-          borderColor: '#E4E8F1',
-        }}
-      >
-        <Text style={{ color: '#1A2238', fontSize: 13, fontWeight: '700' }}>
-          Subscription: {subscriptionPlan}
-        </Text>
-        <Text style={{ color: '#4E5A7A', fontSize: 12, marginTop: 4 }}>
-          Trial active: {trialActive ? 'yes' : 'no'}
-        </Text>
-        <Text style={{ color: '#4E5A7A', fontSize: 12, marginTop: 2 }}>
-          Period type: {subscriptionPeriodType}
-        </Text>
-        <Text style={{ color: '#4E5A7A', fontSize: 12, marginTop: 2 }}>
-          Will renew: {subscriptionWillRenew === null ? 'unknown' : subscriptionWillRenew ? 'yes' : 'no'}
-        </Text>
-        <Text style={{ color: '#4E5A7A', fontSize: 12, marginTop: 2 }}>
-          Expires: {subscriptionExpiresAt ? new Date(subscriptionExpiresAt).toLocaleString() : 'unknown'}
-        </Text>
-      </View>
-
+      {/* Shield active banner */}
       {blockState.isShieldActive && (
-        <View
-          style={{
-            backgroundColor: '#FFFFFF',
-            borderRadius: 18,
-            padding: 14,
-            marginBottom: 12,
-            borderWidth: 1,
-            borderColor: '#E4E8F1',
-          }}
-        >
-          <Text style={{ color: '#151925', fontWeight: '700', fontSize: 15, textAlign: 'center' }}>
+        <View style={{ backgroundColor: modeVisual.cardSurface, borderRadius: 20, padding: 16, marginBottom: 14, borderWidth: 1, borderColor: modeVisual.modeCardGlow }}>
+          <Text style={{ color: modeVisual.modeCardText, fontWeight: '700', fontSize: 14, marginBottom: 12 }}>
             {blockState.activeBlockType === 'budget' ? '🔴 Over-budget block active' : '❄️ Precautionary block active'}
           </Text>
           <Pressable
             onPress={() => setShowOverrideFlow(true)}
-            style={{
-              marginTop: 12,
-              backgroundColor: homeActionColor,
-              paddingVertical: 16,
-              borderRadius: 14,
-              alignItems: 'center',
-              shadowColor: '#0E1320',
-              shadowOpacity: 0.18,
-              shadowRadius: 10,
-              shadowOffset: { width: 0, height: 6 },
-              elevation: 4,
-            }}
+            style={{ backgroundColor: homeActionColor, paddingVertical: 14, borderRadius: 14, alignItems: 'center' }}
           >
-            <Text style={{ color: '#FFFFFF', fontWeight: '700', fontSize: 16 }}>
-              Request override
-            </Text>
+            <Text style={{ color: '#FFFFFF', fontWeight: '700', fontSize: 15 }}>Request override</Text>
           </Pressable>
         </View>
       )}
 
+      {/* Auto-shift notice */}
       {blockState.autoShiftedFromPrecau && (
-        <View style={{ backgroundColor: '#FFFFFF', borderRadius: 14, padding: 12, marginBottom: 12, borderWidth: 1, borderColor: '#FFD7CC' }}>
-          <Text style={{ color: '#AA3E28', fontWeight: '600', fontSize: 13, textAlign: 'center' }}>
+        <View style={{ backgroundColor: modeVisual.cardSurface, borderRadius: 14, padding: 12, marginBottom: 12, borderWidth: 1, borderColor: modeVisual.modeCardGlow }}>
+          <Text style={{ color: modeVisual.accentGlow, fontWeight: '600', fontSize: 13, textAlign: 'center' }}>
             Over budget — auto-shifted to Gentle mode
           </Text>
         </View>
       )}
 
+      {/* Precau recommendation */}
       {showPrecauRecommendation && (
         <Pressable
           onPress={() => handleSetMode('precautionary')}
-          style={{
-            alignSelf: 'flex-start',
-            paddingHorizontal: 10,
-            paddingVertical: 6,
-            borderRadius: 999,
-            marginBottom: 10,
-            backgroundColor: '#F2F6FF',
-            borderWidth: 1,
-            borderColor: '#D6E3FF',
-          }}
+          style={{ alignSelf: 'flex-start', paddingHorizontal: 12, paddingVertical: 7, borderRadius: 999, marginBottom: 14, backgroundColor: modeVisual.cardSurface, borderWidth: 1, borderColor: modeVisual.cardBorder }}
         >
-          <Text style={{ color: '#2B4C93', fontWeight: '600', fontSize: 11 }}>
-            💡 Under budget: switch to Precautionary for extra protection
+          <Text style={{ color: modeVisual.labelColor, fontWeight: '600', fontSize: 11 }}>
+            💡 Under budget — switch to Precautionary
           </Text>
         </Pressable>
       )}
 
+      {/* Budget row */}
       <View style={{ flexDirection: 'row', gap: 12, marginBottom: 14 }}>
-        <View style={{ flex: 1, backgroundColor: homePalette.white, borderRadius: 22, padding: 16 }}>
-          <Text style={{ color: '#535A70', fontSize: 11, textTransform: 'uppercase', letterSpacing: 1, fontWeight: '600' }}>
-            Weekly spend
-          </Text>
-          <Text style={{ fontSize: 30, fontWeight: '700', color: '#11131A', marginTop: 6 }}>${totalSpend.toFixed(0)}</Text>
-          <Text style={{ marginTop: 4, color: '#5F6577', fontSize: 12, fontWeight: '500' }}>of ${weeklyBudget} budget</Text>
-          <View style={{ marginTop: 12, height: 8, borderRadius: 999, backgroundColor: '#DCE0ED' }}>
-            <View style={{ height: 8, borderRadius: 999, backgroundColor: homePalette.orange, width: `${budgetProgress * 100}%` }} />
+        <View style={{ flex: 1, backgroundColor: modeVisual.cardSurface, borderRadius: 22, padding: 18, borderWidth: 1, borderColor: modeVisual.cardBorder }}>
+          <Text style={{ color: modeVisual.labelColor, fontSize: 10, textTransform: 'uppercase', letterSpacing: 1.2, fontWeight: '700' }}>Weekly spend</Text>
+          <Text style={{ fontSize: 32, fontWeight: '800', color: modeVisual.valueColor, marginTop: 8, letterSpacing: -1 }}>${totalSpend.toFixed(0)}</Text>
+          <Text style={{ marginTop: 4, color: modeVisual.dimText, fontSize: 12 }}>of ${weeklyBudget} budget</Text>
+          <View style={{ marginTop: 14, height: 4, borderRadius: 999, backgroundColor: modeVisual.progressTrack }}>
+            <View style={{ height: 4, borderRadius: 999, backgroundColor: overBudget ? '#FF4444' : modeVisual.accentGlow, width: `${budgetProgress * 100}%` }} />
           </View>
         </View>
-        <View style={{ flex: 1, backgroundColor: '#FFFFFF', borderRadius: 22, padding: 16, borderWidth: 1, borderColor: '#E4E8F1' }}>
-          <Text style={{ color: '#535A70', fontSize: 11, textTransform: 'uppercase', letterSpacing: 1, fontWeight: '600' }}>
-            Remaining
-          </Text>
-          <Text style={{ fontSize: 30, fontWeight: '700', color: '#11131A', marginTop: 6 }}>${remaining.toFixed(0)}</Text>
-          <Text style={{ marginTop: 4, color: '#5F6577', fontSize: 12, fontWeight: '500' }}>before lock threshold</Text>
+        <View style={{ flex: 1, backgroundColor: modeVisual.cardSurface, borderRadius: 22, padding: 18, borderWidth: 1, borderColor: modeVisual.cardBorder }}>
+          <Text style={{ color: modeVisual.labelColor, fontSize: 10, textTransform: 'uppercase', letterSpacing: 1.2, fontWeight: '700' }}>Remaining</Text>
+          <Text style={{ fontSize: 32, fontWeight: '800', color: overBudget ? '#FF4444' : modeVisual.accentGlow, marginTop: 8, letterSpacing: -1 }}>${remaining.toFixed(0)}</Text>
+          <Text style={{ marginTop: 4, color: modeVisual.dimText, fontSize: 12 }}>before lock</Text>
         </View>
       </View>
 
-      <View
-        style={{
-          backgroundColor: '#FFFFFF',
-          borderRadius: 22,
-          padding: 18,
-          borderWidth: 1,
-          borderColor: '#DDE3EF',
-          marginBottom: 14,
-        }}
-      >
-        <Text
-          style={{
-            color: '#2E3140',
-            fontSize: 12,
-            textTransform: 'uppercase',
-            letterSpacing: 1,
-            fontWeight: '600',
-          }}
-        >
-          Shielded apps
-        </Text>
-        <Text style={{
-          color: '#151925',
-          fontWeight: '700',
-          fontSize: 22,
-          marginTop: 8,
-        }}>
-          {blockSettings.selectedAppCount > 0
-            ? `${blockSettings.selectedAppCount} app(s) selected`
-            : 'No apps selected'}
-        </Text>
-        {blockSettings.selectedAppCount > 0 ? (
-          <Text
-            style={{
-              color: '#2E3140',
-              fontWeight: '500',
-              marginTop: 8,
-              fontSize: 13,
-            }}
-          >
-            {selectedAppLabels.length > 0
-              ? `Selected: ${selectedAppLabels.slice(0, 3).join(', ')}${selectedAppLabels.length > 3 ? ` +${selectedAppLabels.length - 3}` : ''}`
-              : `${blockSettings.selectedAppCount} protected app/category selection(s)`}
-          </Text>
-        ) : (
-          <Text
-            style={{
-              color: '#2E3140',
-              fontWeight: '500',
-              marginTop: 8,
-              fontSize: 13,
-            }}
-          >
-            Choose delivery apps/categories to shield.
+      {/* Streak card */}
+      <View style={{ backgroundColor: modeVisual.cardSurface, borderRadius: 16, paddingHorizontal: 14, paddingVertical: 12, borderWidth: 1, borderColor: modeVisual.cardBorder, marginBottom: 10 }}>
+        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+          <View>
+            <Text style={{ color: modeVisual.labelColor, fontSize: 10, textTransform: 'uppercase', letterSpacing: 1.2, fontWeight: '700' }}>Streak</Text>
+            <Text style={{ fontSize: 22, fontWeight: '800', color: modeVisual.valueColor, marginTop: 4, letterSpacing: -0.3 }}>3 days</Text>
+          </View>
+          <Text style={{ fontSize: 26 }}>🔥</Text>
+        </View>
+        {blockState.overridesThisWeek > 0 && (
+          <Text style={{ color: modeVisual.dimText, fontWeight: '500', marginTop: 6, fontSize: 11 }}>
+            {blockState.overridesThisWeek} override(s) this week
           </Text>
         )}
+      </View>
 
-        <View style={{ marginTop: 12, alignItems: 'flex-start' }}>
+      {/* Shielded apps card */}
+      <View style={{ backgroundColor: modeVisual.cardSurface, borderRadius: 16, paddingHorizontal: 14, paddingVertical: 12, borderWidth: 1, borderColor: modeVisual.cardBorder, marginBottom: 14 }}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+          <View style={{ flex: 1 }}>
+            <Text style={{ color: modeVisual.labelColor, fontSize: 10, textTransform: 'uppercase', letterSpacing: 1.2, fontWeight: '700' }}>Shielded apps</Text>
+            <Text style={{ color: modeVisual.valueColor, fontWeight: '800', fontSize: 16, letterSpacing: -0.3, marginTop: 3 }}>
+              {blockSettings.selectedAppCount > 0 ? `${blockSettings.selectedAppCount} protected` : 'None selected'}
+            </Text>
+            <Text numberOfLines={1} style={{ color: modeVisual.dimText, fontWeight: '500', marginTop: 2, fontSize: 11 }}>
+              {blockSettings.selectedAppCount > 0
+                ? (selectedAppLabels.length > 0
+                  ? selectedAppLabels.slice(0, 3).join(', ') + (selectedAppLabels.length > 3 ? ` +${selectedAppLabels.length - 3}` : '')
+                  : `${blockSettings.selectedAppCount} protected selection(s)`)
+                : 'Choose delivery apps to shield from impulse orders.'}
+            </Text>
+          </View>
           <Pressable
             onPress={handleSelectApps}
-            style={{
-              backgroundColor:
-                blockSettings.mode === 'gentle'
-                  ? '#DE6B44'
-                  : blockSettings.mode === 'moderate'
-                    ? '#3E7EC6'
-                    : '#41A78F',
-              paddingHorizontal: 14,
-              paddingVertical: 9,
-              borderRadius: 12,
-            }}
+            style={{ backgroundColor: modeVisual.action, paddingHorizontal: 14, paddingVertical: 9, borderRadius: 11 }}
           >
-            <Text style={{ color: '#FFFFFF', fontWeight: '600', fontSize: 13 }}>
+            <Text style={{ color: '#FFFFFF', fontWeight: '700', fontSize: 12 }}>
               {blockSettings.selectedAppCount > 0 ? 'Manage apps' : 'Select apps'}
             </Text>
           </Pressable>
         </View>
       </View>
 
-      <View style={{ backgroundColor: '#FFFFFF', borderRadius: 18, padding: 16, borderWidth: 1, borderColor: '#E4E8F1', marginBottom: 14 }}>
-        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-          <View>
-            <Text style={{ color: '#5E667B', fontSize: 11, textTransform: 'uppercase', letterSpacing: 1, fontWeight: '600' }}>Streak</Text>
-            <Text style={{ fontSize: 24, fontWeight: '700', color: '#151925', marginTop: 4 }}>3 days</Text>
-          </View>
-          <Text style={{ fontSize: 32 }}>🔥</Text>
-        </View>
-        {blockState.overridesThisWeek > 0 && (
-          <Text style={{ color: '#5E667B', fontWeight: '500', marginTop: 8, fontSize: 13 }}>
-            {blockState.overridesThisWeek} override(s) this week
-            {blockSettings.penaltyEnabled ? ` · $${blockState.penaltyAccumulated} guilt jar` : ''}
-          </Text>
-        )}
-      </View>
-
-      <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 8, marginBottom: 10 }}>
-        <Text style={{ fontSize: 18, fontWeight: '800', color: '#151925' }}>Recent orders</Text>
+      {/* Recent orders */}
+      <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+        <Text style={{ fontSize: 16, fontWeight: '800', color: modeVisual.valueColor, letterSpacing: -0.3 }}>Recent orders</Text>
         <Pressable onPress={() => setActiveTab('orders')}>
-          <Text style={{ color: homeActionColor, fontWeight: '700', fontSize: 13 }}>View all</Text>
+          <Text style={{ color: modeVisual.accentGlow, fontWeight: '700', fontSize: 13 }}>View all</Text>
         </Pressable>
       </View>
-      {orders.length === 0 && (
-        <Text style={{ color: homePalette.muted, fontSize: 13, marginBottom: 12 }}>No orders yet. Add one in the Orders tab.</Text>
+      {homeRecentOrders.length === 0 && (
+        <Text style={{ color: modeVisual.dimText, fontSize: 13, marginBottom: 12 }}>No orders yet. Add one in the Orders tab.</Text>
       )}
-      {orders.slice(0, 3).map((order) => (
+      {homeRecentOrders.slice(0, 3).map((order) => (
         <View
           key={order.id}
           style={{
-            padding: 16,
-            borderRadius: 16,
+            padding: 14,
+            borderRadius: 18,
             backgroundColor: modeVisual.orderBg,
             borderWidth: 1,
             borderColor: modeVisual.orderBorder,
             flexDirection: 'row',
             justifyContent: 'space-between',
             alignItems: 'center',
-            marginBottom: 12,
+            marginBottom: 10,
           }}
         >
           <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-            <View
-              style={{
-                width: 34,
-                height: 34,
-                borderRadius: 17,
-                backgroundColor: modeVisual.orderIconBg,
-                alignItems: 'center',
-                justifyContent: 'center',
-                marginRight: 10,
-              }}
-            >
-              <Text style={{ fontSize: 16 }}>🍽️</Text>
+            <View style={{ width: 36, height: 36, borderRadius: 12, backgroundColor: modeVisual.orderIconBg, alignItems: 'center', justifyContent: 'center', marginRight: 12 }}>
+              <Text style={{ fontSize: 16 }}>{getOrderEmoji(order.vendor, order.amount)}</Text>
             </View>
             <View>
-              <Text style={{ fontWeight: '700', color: '#151925', fontSize: 15 }}>{order.vendor}</Text>
-              <Text style={{ marginTop: 4, color: '#6D7386', fontSize: 12 }}>{formatOrderDate(order.ordered_at)}</Text>
+              <Text style={{ fontWeight: '700', color: modeVisual.valueColor, fontSize: 14 }}>{order.vendor}</Text>
+              <Text style={{ marginTop: 3, color: modeVisual.dimText, fontSize: 12 }}>{formatOrderDate(order.ordered_at)}</Text>
             </View>
           </View>
-          <Text style={{ fontWeight: '800', color: modeVisual.orderAmount, fontSize: 16 }}>-${order.amount.toFixed(2)}</Text>
+          <Text style={{ fontWeight: '800', color: modeVisual.orderAmount, fontSize: 15 }}>-${order.amount.toFixed(2)}</Text>
         </View>
       ))}
     </ScrollView>
@@ -1031,58 +1019,67 @@ export default function MainDashboard({
   const renderOrders = () => (
     <>
       <ScrollView contentContainerStyle={styles.scrollContent}>
-        <View style={styles.ordersHeader}>
-          <Text style={[styles.ordersHeaderTitle, { color: ordersHeadingColor }]}>Orders & Spend</Text>
-          <Text style={[styles.ordersHeaderSubtitle, { color: ordersSubColor }]}>Track every delivery order</Text>
+        {/* Header */}
+        <View style={{ marginBottom: 20, paddingTop: 4 }}>
+          <Text style={{ fontSize: 28, fontWeight: '800', color: modeVisual.valueColor, letterSpacing: -0.8 }}>Orders & Spend</Text>
+          <Text style={{ fontSize: 13, color: modeVisual.labelColor, marginTop: 4, fontWeight: '500' }}>Track every delivery order</Text>
         </View>
 
+        {/* Add order card */}
         <Pressable
           onPress={() => setShowAddOrderModal(true)}
-          style={[
-            styles.addOrderCard,
-            {
-              backgroundColor: modeVisual.modeCardBase,
-              borderColor: modeVisual.modeCardGlow,
-            },
-          ]}
+          style={{
+            backgroundColor: modeVisual.modeCardBase,
+            borderRadius: 24,
+            borderWidth: 1,
+            borderColor: modeVisual.modeCardGlow,
+            padding: 20,
+            marginBottom: 20,
+            flexDirection: 'row',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            overflow: 'hidden',
+          }}
         >
+          <View pointerEvents="none" style={{ position: 'absolute', width: 200, height: 200, borderRadius: 100, backgroundColor: modeVisual.modeCardTint, top: -110, right: -60, opacity: 0.12 }} />
           <View>
-            <Text style={[styles.addOrderCardTitle, { color: modeVisual.modeCardText }]}>Log your next order</Text>
+            <Text style={{ color: modeVisual.labelColor, fontSize: 10, fontWeight: '700', letterSpacing: 1.4, textTransform: 'uppercase', marginBottom: 6 }}>New entry</Text>
+            <Text style={{ color: modeVisual.modeCardText, fontSize: 18, fontWeight: '800', letterSpacing: -0.4 }}>Log your next order</Text>
           </View>
-          <View style={[styles.addOrderCtaPill, { backgroundColor: orderActionColor }]}>
-            <Text style={styles.addOrderCtaText}>Add order</Text>
+          <View style={{ backgroundColor: orderActionColor, borderRadius: 14, paddingHorizontal: 16, paddingVertical: 10 }}>
+            <Text style={{ color: '#FFFFFF', fontWeight: '700', fontSize: 13 }}>+ Add</Text>
           </View>
         </Pressable>
 
-        <View style={styles.ordersSectionHeader}>
-          <Text style={[styles.ordersSectionTitle, { color: modeVisual.modeCardText }]}>Recent orders</Text>
-          <Text style={[styles.ordersSectionCount, { color: ordersCountColor }]}>{orders.length} total</Text>
+        {/* Section header */}
+        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+          <Text style={{ color: modeVisual.valueColor, fontSize: 15, fontWeight: '800', letterSpacing: -0.3 }}>Recent orders</Text>
+          <View style={{ backgroundColor: modeVisual.cardSurface, borderRadius: 999, paddingHorizontal: 10, paddingVertical: 4, borderWidth: 1, borderColor: modeVisual.cardBorder }}>
+            <Text style={{ color: modeVisual.dimText, fontSize: 11, fontWeight: '700' }}>{orders.length} total</Text>
+          </View>
         </View>
 
         {orders.length === 0 ? (
-          <View
-            style={[
-              styles.ordersEmptyCard,
-              {
-                backgroundColor: modeVisual.orderBg,
-                borderColor: modeVisual.orderBorder,
-              },
-            ]}
-          >
-            <Text style={[styles.ordersEmptyTitle, { color: modeVisual.orderAmount }]}>No orders yet</Text>
-            <Text style={[styles.ordersEmptyBody, { color: modeVisual.modeCardSubText }]}>Use Add order to log your first delivery this week.</Text>
+          <View style={{ backgroundColor: modeVisual.cardSurface, borderRadius: 20, padding: 24, borderWidth: 1, borderColor: modeVisual.cardBorder, alignItems: 'center' }}>
+            <Text style={{ fontSize: 28, marginBottom: 10 }}>🛒</Text>
+            <Text style={{ color: modeVisual.valueColor, fontWeight: '700', fontSize: 16, marginBottom: 6 }}>No orders yet</Text>
+            <Text style={{ color: modeVisual.dimText, fontSize: 13, textAlign: 'center', lineHeight: 19 }}>Tap Add to log your first delivery this week.</Text>
           </View>
         ) : (
           orders.map((order) => (
             <Pressable
               key={order.id}
-              style={[
-                styles.orderRow,
-                {
-                  backgroundColor: modeVisual.orderBg,
-                  borderColor: modeVisual.orderBorder,
-                },
-              ]}
+              style={{
+                backgroundColor: modeVisual.orderBg,
+                borderRadius: 18,
+                borderWidth: 1,
+                borderColor: modeVisual.orderBorder,
+                padding: 14,
+                flexDirection: 'row',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                marginBottom: 10,
+              }}
               onLongPress={() =>
                 Alert.alert('Delete order?', `${order.vendor} — $${order.amount.toFixed(2)}`, [
                   { text: 'Cancel', style: 'cancel' },
@@ -1091,15 +1088,15 @@ export default function MainDashboard({
               }
             >
               <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                <View style={[styles.orderIconBubble, { backgroundColor: modeVisual.orderIconBg }]}>
-                  <Text style={{ fontSize: 16 }}>🍽️</Text>
+                <View style={{ width: 38, height: 38, borderRadius: 12, backgroundColor: modeVisual.orderIconBg, alignItems: 'center', justifyContent: 'center', marginRight: 12 }}>
+                  <Text style={{ fontSize: 17 }}>{getOrderEmoji(order.vendor, order.amount)}</Text>
                 </View>
                 <View>
-                  <Text style={styles.orderVendor}>{order.vendor}</Text>
-                  <Text style={styles.orderDate}>{formatOrderDate(order.ordered_at)}</Text>
+                  <Text style={{ fontWeight: '700', color: modeVisual.valueColor, fontSize: 14 }}>{order.vendor}</Text>
+                  <Text style={{ marginTop: 3, color: modeVisual.dimText, fontSize: 12 }}>{formatOrderDate(order.ordered_at)}</Text>
                 </View>
               </View>
-              <Text style={[styles.orderAmount, { color: modeVisual.orderAmount }]}>-${order.amount.toFixed(2)}</Text>
+              <Text style={{ fontWeight: '800', color: modeVisual.orderAmount, fontSize: 15 }}>-${order.amount.toFixed(2)}</Text>
             </Pressable>
           ))
         )}
@@ -1146,7 +1143,7 @@ export default function MainDashboard({
                       setNewOrderVendor(app);
                       setShowVendorMenu(false);
                     }}
-                    style={[styles.vendorMenuItem, { borderBottomColor: 'rgba(33,59,97,0.12)' }]}
+                    style={[styles.vendorMenuItem, { borderBottomColor: modeVisual.orderBorder }]}
                   >
                     <Text style={[styles.vendorMenuItemText, { color: orderFieldText }]}>{app}</Text>
                   </Pressable>
@@ -1196,199 +1193,285 @@ export default function MainDashboard({
       .sort((a, b) => b.total - a.total);
   }, [orders]);
 
-  const avgOrderAmount = orders.length > 0 ? totalSpend / orders.length : 0;
+  const avgOrderAmount = ordersThisWeek.length > 0 ? totalSpend / ordersThisWeek.length : 0;
   const moneySaved = Math.max(weeklyBudget - totalSpend, 0);
   const budgetUsedPercent = Math.round(budgetProgress * 100);
 
+  const weekdaySpend = useMemo(() => {
+    const totals = [0, 0, 0, 0, 0, 0, 0];
+    for (const order of ordersThisWeek) {
+      const day = new Date(order.ordered_at).getDay();
+      totals[day] += order.amount;
+    }
+    return totals;
+  }, [ordersThisWeek]);
+
+  const topVendorShare = useMemo(() => {
+    if (!vendorBreakdown.length || totalSpend <= 0) return 0;
+    return Math.round((vendorBreakdown[0].total / totalSpend) * 100);
+  }, [vendorBreakdown, totalSpend]);
+
+  const homeRecentOrders = useMemo(
+    () => orders.filter((order) => getWeekStartIso(order.ordered_at) === homeWeekStartIso),
+    [orders, homeWeekStartIso],
+  );
+
+  const highestSpendDay = useMemo(() => {
+    let max = 0;
+    let idx = 0;
+    weekdaySpend.forEach((amount, i) => {
+      if (amount > max) {
+        max = amount;
+        idx = i;
+      }
+    });
+    return { amount: max, label: WEEKDAY_LABELS[idx] };
+  }, [weekdaySpend]);
+
+  const projectionForMonth = Math.round(avgOrderAmount * Math.max(orders.length / 1.2, 10));
+  const weeklyBurnRate = Math.round((totalSpend / Math.max(weeklyBudget, 1)) * 100);
+  const maxWeekdaySpend = Math.max(...weekdaySpend, 1);
+
   const renderReports = () => (
     <ScrollView contentContainerStyle={styles.scrollContent}>
-      {renderHeader('Reports', 'Your weekly insights')}
+      <View style={{ marginBottom: 20, paddingTop: 4 }}>
+        <Text style={{ fontSize: 28, fontWeight: '800', color: modeVisual.valueColor, letterSpacing: -0.8 }}>Reports</Text>
+        <Text style={{ fontSize: 13, color: modeVisual.labelColor, marginTop: 4, fontWeight: '500' }}>Actionable insights from your actual behavior</Text>
+      </View>
 
-      <View style={styles.reportSectionRow}>
-        <View style={styles.reportCard}>
-          <Text style={styles.reportTitle}>Total spent</Text>
-          <Text style={styles.reportValue}>${totalSpend.toFixed(2)}</Text>
-          <Text style={styles.reportHint}>{budgetUsedPercent}% of budget</Text>
-        </View>
-        <View style={styles.reportCard}>
-          <Text style={styles.reportTitle}>Money saved</Text>
-          <Text style={[styles.reportValue, { color: COLORS.sage }]}>${moneySaved.toFixed(2)}</Text>
-          <Text style={styles.reportHint}>remaining this week</Text>
+      <View style={{ marginBottom: 24 }}>
+        <Text style={{ color: modeVisual.labelColor, fontSize: 10, fontWeight: '700', letterSpacing: 1.2, textTransform: 'uppercase', marginBottom: 12 }}>Key numbers</Text>
+        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10 }}>
+          {[
+            { label: 'Spent', value: `$${totalSpend.toFixed(0)}`, hint: `${budgetUsedPercent}% used` },
+            { label: 'Remaining', value: `$${moneySaved.toFixed(0)}`, hint: 'left this week' },
+            { label: 'Orders', value: `${ordersThisWeek.length}`, hint: `avg $${avgOrderAmount.toFixed(1)}` },
+            { label: 'Overrides', value: `${blockState.overridesThisWeek}`, hint: blockState.overridesThisWeek === 0 ? 'strong discipline' : 'friction used' },
+          ].map((item) => (
+            <View key={item.label} style={{ width: '48%', backgroundColor: modeVisual.orderBg, borderRadius: 10, paddingVertical: 10, paddingHorizontal: 12 }}>
+              <Text style={{ color: modeVisual.labelColor, fontSize: 9, fontWeight: '700', letterSpacing: 0.8 }}>{item.label}</Text>
+              <Text style={{ color: modeVisual.valueColor, fontSize: 20, fontWeight: '800', marginTop: 3 }}>{item.value}</Text>
+              <Text style={{ color: modeVisual.dimText, fontSize: 10, marginTop: 2 }}>{item.hint}</Text>
+            </View>
+          ))}
         </View>
       </View>
 
-      <View style={styles.reportSectionRow}>
-        <View style={styles.reportCard}>
-          <Text style={styles.reportTitle}>Orders</Text>
-          <Text style={styles.reportValue}>{orders.length}</Text>
-          <Text style={styles.reportHint}>avg ${avgOrderAmount.toFixed(2)} each</Text>
-        </View>
-        <View style={styles.reportCard}>
-          <Text style={styles.reportTitle}>Overrides</Text>
-          <Text style={styles.reportValue}>{blockState.overridesThisWeek}</Text>
-          <Text style={styles.reportHint}>
-            {blockState.overridesThisWeek === 0 ? 'staying strong!' : 'this week'}
-          </Text>
+      <View style={{ marginBottom: 24 }}>
+        <Text style={{ color: modeVisual.labelColor, fontSize: 10, fontWeight: '700', letterSpacing: 1.2, textTransform: 'uppercase', marginBottom: 8 }}>Day-of-week spend pattern</Text>
+        <Text style={{ color: modeVisual.dimText, fontSize: 12, marginBottom: 10 }}>Your trigger days stand out visually.</Text>
+        <View style={{ gap: 8 }}>
+          {WEEKDAY_LABELS.map((day, idx) => {
+            const amount = weekdaySpend[idx];
+            const widthPercent = Math.max((amount / maxWeekdaySpend) * 100, amount > 0 ? 8 : 2);
+            return (
+              <View key={day} style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                <Text style={{ width: 32, color: modeVisual.valueColor, fontSize: 11, fontWeight: '700' }}>{day}</Text>
+                <View style={{ flex: 1, height: 10, borderRadius: 999, backgroundColor: modeVisual.progressTrack, overflow: 'hidden' }}>
+                  <View
+                    style={{
+                      height: 10,
+                      width: `${widthPercent}%`,
+                      borderRadius: 999,
+                      backgroundColor: amount === highestSpendDay.amount && amount > 0 ? modeVisual.orderAmount : modeVisual.accentGlow,
+                    }}
+                  />
+                </View>
+                <Text style={{ width: 44, textAlign: 'right', color: modeVisual.dimText, fontSize: 11 }}>${amount.toFixed(0)}</Text>
+              </View>
+            );
+          })}
         </View>
       </View>
 
-      {blockSettings.penaltyEnabled && blockState.penaltyAccumulated > 0 && (
-        <View style={styles.reportCardWide}>
-          <Text style={styles.reportTitle}>Guilt jar</Text>
-          <Text style={[styles.reportValue, { color: COLORS.coral }]}>
-            ${blockState.penaltyAccumulated.toFixed(2)}
+      <View style={{ marginBottom: 24 }}>
+        <Text style={{ color: modeVisual.labelColor, fontSize: 10, fontWeight: '700', letterSpacing: 1.2, textTransform: 'uppercase', marginBottom: 12 }}>What matters most right now</Text>
+        <View style={{ gap: 12 }}>
+          <Text style={{ color: modeVisual.valueColor, fontSize: 13, lineHeight: 20 }}>
+            • <Text style={{ fontWeight: '700' }}>Burn rate:</Text> You are at {weeklyBurnRate}% of weekly budget.
+            {weeklyBurnRate >= 90 ? ' Set a no-order buffer for the next 2 days.' : ' Keep this pace and you should finish under budget.'}
           </Text>
-          <Text style={styles.reportHint}>
-            from {blockState.overridesThisWeek} override(s) at ${blockSettings.penaltyAmount} each
+          <Text style={{ color: modeVisual.valueColor, fontSize: 13, lineHeight: 20 }}>
+            • <Text style={{ fontWeight: '700' }}>Dependency risk:</Text>{' '}
+            {vendorBreakdown.length ? `${vendorBreakdown[0].vendor} drives ${topVendorShare}% of your spend.` : 'No dominant vendor yet.'}
           </Text>
-        </View>
-      )}
-
-      <View style={styles.reportCardWide}>
-        <Text style={styles.reportTitle}>Block status</Text>
-        <View style={styles.reportStatusRow}>
-          <View style={[styles.reportStatusDot, {
-            backgroundColor: blockState.isShieldActive ? '#D32F2F' : blockSettings.enabled ? COLORS.sage : COLORS.muted,
-          }]} />
-          <Text style={styles.reportStatusText}>
-            {blockState.isShieldActive
-              ? `${blockState.activeBlockType === 'budget' ? 'Over-budget' : 'Precautionary'} block active`
-              : blockSettings.enabled
-              ? 'Monitoring — under budget'
-              : 'Not configured'}
+          <Text style={{ color: modeVisual.valueColor, fontSize: 13, lineHeight: 20 }}>
+            • <Text style={{ fontWeight: '700' }}>Peak trigger day:</Text>{' '}
+            {highestSpendDay.amount > 0
+              ? `${highestSpendDay.label} is highest at $${highestSpendDay.amount.toFixed(2)}. Pre-plan one backup meal.`
+              : 'No spending pattern yet this week.'}
+          </Text>
+          <Text style={{ color: modeVisual.valueColor, fontSize: 13, lineHeight: 20 }}>
+            • <Text style={{ fontWeight: '700' }}>Projected monthly spend:</Text> ~${projectionForMonth} if current order size/frequency continues.
           </Text>
         </View>
-        <Text style={styles.reportHint}>
-          {blockSettings.selectedAppCount} app(s) selected · {blockSettings.mode} mode
-          {blockSettings.schedule.enabled
-            ? ` · scheduled ${blockSettings.schedule.startHour}:${String(blockSettings.schedule.startMinute).padStart(2, '0')}–${blockSettings.schedule.endHour}:${String(blockSettings.schedule.endMinute).padStart(2, '0')}`
-            : ''}
-        </Text>
-      </View>
-
-      <View style={styles.reportCardWide}>
-        <Text style={styles.reportTitle}>Budget progress</Text>
-        <View style={styles.reportProgressTrack}>
-          <View style={[
-            styles.reportProgressFill,
-            {
-              width: `${budgetUsedPercent}%`,
-              backgroundColor: budgetProgress >= 1 ? '#D32F2F' : budgetProgress >= 0.75 ? COLORS.coral : COLORS.sage,
-            },
-          ]} />
-        </View>
-        <Text style={styles.reportHint}>
-          ${totalSpend.toFixed(2)} / ${weeklyBudget} ({budgetUsedPercent}%)
-        </Text>
       </View>
 
       {vendorBreakdown.length > 0 && (
-        <View style={styles.reportCardWide}>
-          <Text style={styles.reportTitle}>Top vendors</Text>
-          {vendorBreakdown.map((v) => (
-            <View key={v.vendor} style={styles.vendorRow}>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.vendorName}>{v.vendor}</Text>
-                <Text style={styles.vendorCount}>{v.count} order(s)</Text>
+        <View style={{ marginBottom: 24 }}>
+          <Text style={{ color: modeVisual.labelColor, fontSize: 10, fontWeight: '700', letterSpacing: 1.2, textTransform: 'uppercase', marginBottom: 12 }}>Top vendors</Text>
+          {vendorBreakdown.slice(0, 5).map((v) => (
+            <View key={v.vendor} style={{ marginBottom: 12 }}>
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                <View>
+                  <Text style={{ color: modeVisual.valueColor, fontWeight: '700', fontSize: 14 }}>{v.vendor}</Text>
+                  <Text style={{ color: modeVisual.dimText, fontSize: 11, marginTop: 2 }}>{v.count} order(s)</Text>
+                </View>
+                <Text style={{ color: modeVisual.orderAmount, fontWeight: '800', fontSize: 15 }}>${v.total.toFixed(2)}</Text>
               </View>
-              <Text style={styles.vendorTotal}>${v.total.toFixed(2)}</Text>
-              <View style={styles.vendorBarTrack}>
-                <View style={[styles.vendorBarFill, { width: `${(v.total / totalSpend) * 100}%` }]} />
+              <View style={{ height: 4, borderRadius: 999, backgroundColor: modeVisual.progressTrack }}>
+                <View style={{ height: 4, borderRadius: 999, backgroundColor: modeVisual.accentGlow, width: `${(v.total / Math.max(totalSpend, 1)) * 100}%` }} />
               </View>
             </View>
           ))}
         </View>
       )}
-
     </ScrollView>
   );
 
-  const renderBridge = () => (
+  const renderChat = () => (
     <ScrollView contentContainerStyle={styles.scrollContent}>
-      {renderHeader('Bridge Resources', 'Simple steps to cook more')}
-      <Pressable style={styles.bridgeMiniButton} onPress={onReturnToWelcome}>
-        <Text style={styles.bridgeMiniButtonText}>Welcome</Text>
-      </Pressable>
-      <View style={styles.bridgeCard}>
-        <Text style={styles.bridgeTitle}>15-minute meal kit</Text>
-        <Text style={styles.bridgeBody}>Pick 2 staples + a sauce. No recipe, just assemble.</Text>
-      </View>
-      <View style={styles.bridgeCard}>
-        <Text style={styles.bridgeTitle}>Snack-to-dinner plan</Text>
-        <Text style={styles.bridgeBody}>Make a quick protein + veggie and scale up later.</Text>
-      </View>
-      <View style={styles.bridgeCard}>
-        <Text style={styles.bridgeTitle}>Emergency freezer list</Text>
-        <Text style={styles.bridgeBody}>Stock 3 go-to frozen meals to skip delivery.</Text>
-      </View>
-    </ScrollView>
-  );
-
-  const renderSettings = () => (
-    <ScrollView contentContainerStyle={styles.scrollContent}>
-      {renderHeader('Settings', email ?? 'Signed in')}
-      <Pressable style={styles.settingsRow} onPress={() => setActiveSheet('reminders')}>
-        <Text style={styles.settingsText}>Reminders</Text>
-        <Text style={styles.settingsValue}>Manage</Text>
-      </Pressable>
-      <Pressable style={styles.settingsRow} onPress={() => setActiveSheet('budget')}>
-        <Text style={styles.settingsText}>Budget</Text>
-        <Text style={styles.settingsValue}>${weeklyBudget} / week</Text>
-      </Pressable>
-      <Pressable style={styles.settingsRow} onPress={() => setActiveSheet('blocker')}>
-        <Text style={styles.settingsText}>App blocker</Text>
-        <Text style={styles.settingsValue}>
-          {blockState.isShieldActive ? '🔴 Blocking' : blockSettings.enabled ? '🟢 Ready' : 'Off'}
-        </Text>
-      </Pressable>
-      <Pressable style={styles.settingsRow} onPress={() => setShowScreenTimeTest(true)}>
-        <Text style={styles.settingsText}>Screen Time Test</Text>
-        <Text style={styles.settingsValue}>Dev →</Text>
-      </Pressable>
-      <Pressable style={styles.settingsRow} onPress={onSignOut}>
-        <Text style={styles.settingsText}>Sign out</Text>
-        <Text style={styles.settingsValue}>↗</Text>
-      </Pressable>
-    </ScrollView>
-  );
-
-  const renderSheet = () => {
-    if (!activeSheet) return null;
-    if (activeSheet === 'budget') {
-      return (
-        <View style={styles.sheet}>
-          <View style={styles.sheetHeader}>
-            <Text style={styles.sheetTitle}>Budget settings</Text>
-            <Pressable onPress={() => setActiveSheet(null)}>
-              <Text style={styles.sheetClose}>Close</Text>
-            </Pressable>
-          </View>
-          <Text style={styles.sheetLabel}>Weekly budget</Text>
-          <TextInput
-            value={String(weeklyBudget)}
-            onChangeText={(value) => {
-              const num = Number.parseInt(value || '0', 10);
-              setWeeklyBudget(num);
-              void updateBudget({ weekly_limit: num });
-            }}
-            keyboardType="number-pad"
-            style={styles.input}
-          />
-          <Text style={styles.sheetHint}>Blocks trigger once you hit the limit.</Text>
+      {/* Header */}
+      <View style={{ marginBottom: 20, paddingTop: 4 }}>
+        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+          <Text style={{ fontSize: 28, fontWeight: '800', color: modeVisual.valueColor, letterSpacing: -0.8 }}>Chat Coach</Text>
+          <Pressable
+            onPress={handleClearChatHistory}
+            style={{ backgroundColor: modeVisual.orderBg, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 7 }}
+          >
+            <Text style={{ color: modeVisual.labelColor, fontSize: 12, fontWeight: '700' }}>Clear</Text>
+          </Pressable>
         </View>
+        <Text style={{ fontSize: 13, color: modeVisual.labelColor, marginTop: 6, fontWeight: '500' }}>Get quick budget and meal guidance</Text>
+      </View>
+
+      <View style={{ backgroundColor: modeVisual.cardSurface, borderRadius: 20, padding: 14, marginBottom: 12 }}>
+        {chatMessages.map((message) => (
+          <View
+            key={message.id}
+            style={{
+              alignSelf: message.role === 'user' ? 'flex-end' : 'flex-start',
+              maxWidth: '88%',
+              backgroundColor: message.role === 'user' ? modeVisual.action : modeVisual.orderBg,
+              borderRadius: 14,
+              paddingHorizontal: 12,
+              paddingVertical: 10,
+              marginBottom: 8,
+            }}
+          >
+            <Text style={{ color: message.role === 'user' ? '#FFFFFF' : modeVisual.valueColor, fontSize: 13, lineHeight: 19 }}>
+              {message.content}
+            </Text>
+          </View>
+        ))}
+        {isChatSending ? (
+          <Text style={{ color: modeVisual.dimText, fontSize: 12, marginTop: 2 }}>Thinking…</Text>
+        ) : null}
+        {chatError ? (
+          <Text style={{ color: '#FF7D7D', fontSize: 12, marginTop: 2 }}>{chatError}</Text>
+        ) : null}
+      </View>
+
+      <View style={{ backgroundColor: modeVisual.cardSurface, borderRadius: 16, padding: 10, flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+        <TextInput
+          value={chatInput}
+          onChangeText={setChatInput}
+          placeholder="Ask for meal ideas, budget tips, or anti-craving plans"
+          placeholderTextColor={modeVisual.dimText}
+          style={{ flex: 1, color: modeVisual.valueColor, fontSize: 14, paddingHorizontal: 8, paddingVertical: 10 }}
+          editable={!isChatSending}
+          onSubmitEditing={() => {
+            void sendChatMessage();
+          }}
+          returnKeyType="send"
+        />
+        <Pressable
+          onPress={() => {
+            void sendChatMessage();
+          }}
+          disabled={isChatSending || !chatInput.trim()}
+          style={{
+            backgroundColor: isChatSending || !chatInput.trim() ? modeVisual.progressTrack : modeVisual.action,
+            borderRadius: 12,
+            paddingHorizontal: 14,
+            paddingVertical: 10,
+          }}
+        >
+          <Text style={{ color: '#FFFFFF', fontSize: 13, fontWeight: '700' }}>Send</Text>
+        </Pressable>
+      </View>
+    </ScrollView>
+  );
+
+  const renderSettings = () => {
+    const subscriptionTier = subscriptionPlan === 'none'
+      ? 'Free'
+      : `${subscriptionPlan[0].toUpperCase()}${subscriptionPlan.slice(1)}${trialActive ? ' (Trial)' : ''}`;
+
+    const normalizedAgeInput = accountAgeInput.replace(/[^0-9]/g, '').slice(0, 3);
+    const hasAccountChanges = accountNameInput.trim() !== userName.trim() || normalizedAgeInput !== savedAccountAge;
+
+    if (activeSettingsScreen === 'account') {
+      return (
+        <ScrollView contentContainerStyle={styles.scrollContent}>
+          <View style={{ marginBottom: 22, paddingTop: 4 }}>
+            <Pressable onPress={() => setActiveSettingsScreen(null)} style={{ marginBottom: 10 }}>
+              <Text style={{ color: modeVisual.labelColor, fontSize: 13, fontWeight: '700' }}>← Back to settings</Text>
+            </Pressable>
+            <Text style={{ fontSize: 28, fontWeight: '800', color: modeVisual.valueColor, letterSpacing: -0.8 }}>Account</Text>
+          </View>
+          <View style={{ backgroundColor: modeVisual.cardSurface, borderRadius: 20, borderWidth: 1, borderColor: modeVisual.cardBorder, overflow: 'hidden', paddingHorizontal: 18, paddingVertical: 16 }}>
+            <Text style={{ color: modeVisual.labelColor, fontSize: 12, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.8 }}>Name</Text>
+            <TextInput
+              value={accountNameInput}
+              onChangeText={setAccountNameInput}
+              placeholder="Enter your name"
+              placeholderTextColor={modeVisual.dimText}
+              style={{ marginTop: 8, marginBottom: 14, borderWidth: 1, borderColor: modeVisual.cardBorder, borderRadius: 12, paddingHorizontal: 12, paddingVertical: 10, color: modeVisual.valueColor, fontSize: 15, fontWeight: '600' }}
+            />
+
+            <Text style={{ color: modeVisual.labelColor, fontSize: 12, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.8 }}>Age</Text>
+            <TextInput
+              value={accountAgeInput}
+              onChangeText={(value) => setAccountAgeInput(value.replace(/[^0-9]/g, '').slice(0, 3))}
+              placeholder="Enter your age"
+              placeholderTextColor={modeVisual.dimText}
+              keyboardType="number-pad"
+              style={{ marginTop: 8, marginBottom: 16, borderWidth: 1, borderColor: modeVisual.cardBorder, borderRadius: 12, paddingHorizontal: 12, paddingVertical: 10, color: modeVisual.valueColor, fontSize: 15, fontWeight: '600' }}
+            />
+
+            {hasAccountChanges ? (
+              <Pressable onPress={() => { void handleSaveAccountInfo(); }} style={{ backgroundColor: modeVisual.action, borderRadius: 12, alignItems: 'center', paddingVertical: 11, marginBottom: 16 }}>
+                <Text style={{ color: '#FFFFFF', fontSize: 14, fontWeight: '800' }}>Save changes</Text>
+              </Pressable>
+            ) : null}
+
+            <View style={{ borderTopWidth: 1, borderTopColor: modeVisual.cardBorder, paddingTop: 14 }}>
+              <Text style={{ color: modeVisual.labelColor, fontSize: 12, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.8 }}>Email</Text>
+              <Text style={{ color: modeVisual.valueColor, fontSize: 15, fontWeight: '600', marginTop: 6 }}>{email ?? 'Not available'}</Text>
+            </View>
+
+            <View style={{ borderTopWidth: 1, borderTopColor: modeVisual.cardBorder, paddingTop: 14, marginTop: 14 }}>
+              <Text style={{ color: modeVisual.labelColor, fontSize: 12, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.8 }}>Subscription tier</Text>
+              <Text style={{ color: modeVisual.valueColor, fontSize: 15, fontWeight: '600', marginTop: 6 }}>{subscriptionTier}</Text>
+            </View>
+          </View>
+        </ScrollView>
       );
     }
-    if (activeSheet === 'blocker') {
+
+    if (activeSettingsScreen === 'blocker') {
       return (
-        <ScrollView style={styles.sheet} contentContainerStyle={{ paddingBottom: 20 }}>
-          <View style={styles.sheetHeader}>
-            <Text style={styles.sheetTitle}>Blocker settings</Text>
-            <Pressable onPress={() => setActiveSheet(null)}>
-              <Text style={styles.sheetClose}>Close</Text>
+        <ScrollView contentContainerStyle={styles.scrollContent}>
+          <View style={{ marginBottom: 22, paddingTop: 4 }}>
+            <Pressable onPress={() => setActiveSettingsScreen(null)} style={{ marginBottom: 10 }}>
+              <Text style={{ color: modeVisual.labelColor, fontSize: 13, fontWeight: '700' }}>← Back to settings</Text>
             </Pressable>
+            <Text style={{ fontSize: 28, fontWeight: '800', color: modeVisual.valueColor, letterSpacing: -0.8 }}>Blocker settings</Text>
+            <Text style={{ color: modeVisual.labelColor, fontSize: 13, marginTop: 4 }}>Configure apps and mode behavior.</Text>
           </View>
 
-          <Pressable style={styles.primaryButton} onPress={handleSelectApps}>
+          <Pressable style={[styles.primaryButton, { backgroundColor: modeVisual.action, marginBottom: 14 }]} onPress={handleSelectApps}>
             <Text style={styles.primaryButtonText}>
               {blockSettings.selectedAppCount > 0
                 ? `Change apps (${blockSettings.selectedAppCount} selected)`
@@ -1396,166 +1479,245 @@ export default function MainDashboard({
             </Text>
           </Pressable>
 
-          <View style={styles.scheduleDivider} />
-
-          <Text style={styles.sheetLabel}>Cooldown per mode (minutes)</Text>
-          <View style={{ flexDirection: 'row', gap: 10, marginBottom: 12 }}>
+          <Text style={{ color: modeVisual.labelColor, fontSize: 11, fontWeight: '700', letterSpacing: 1.1, textTransform: 'uppercase', marginBottom: 8 }}>Cooldown per mode (minutes)</Text>
+          <View style={{ gap: 8, marginBottom: 10 }}>
             {(['gentle', 'moderate', 'precautionary'] as BlockMode[]).map((m) => (
-              <View key={m} style={{ flex: 1 }}>
-                <Text style={{ color: COLORS.muted, fontSize: 11, fontWeight: '600', marginBottom: 4, textTransform: 'capitalize' }}>
-                  {MODE_LABELS[m].emoji} {MODE_LABELS[m].label}
-                </Text>
+              <View key={m} style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: modeVisual.cardSurface, borderWidth: 1, borderColor: modeVisual.cardBorder, borderRadius: 12, paddingHorizontal: 12, paddingVertical: 10 }}>
+                <Text style={{ color: modeVisual.valueColor, fontSize: 14, fontWeight: '700' }}>{MODE_LABELS[m].emoji} {MODE_LABELS[m].label}</Text>
                 <TextInput
                   value={String(blockSettings.cooldowns[m])}
-                  onChangeText={(v) => handleSetCooldown(m, v)}
+                  onChangeText={(v) => {
+                    void handleSetCooldown(m, v);
+                  }}
                   keyboardType="number-pad"
-                  style={[styles.input, { marginBottom: 0 }]}
+                  style={{ minWidth: 64, textAlign: 'center', color: modeVisual.valueColor, borderWidth: 1, borderColor: modeVisual.cardBorder, borderRadius: 10, paddingVertical: 7, paddingHorizontal: 10, fontWeight: '700' }}
                 />
               </View>
             ))}
           </View>
-          <Text style={styles.sheetHint}>
-            How long the user must wait before overriding a block in each mode.
-          </Text>
+          <Text style={{ color: modeVisual.dimText, fontSize: 12, marginBottom: 16 }}>How long a user waits before override unlock in each mode.</Text>
 
-          <View style={styles.scheduleDivider} />
-
-          <View style={styles.toggleRow}>
-            <Text style={styles.toggleText}>Super strict (Gentle mode)</Text>
-            <Switch
-              value={blockSettings.superStrict}
-              onValueChange={handleToggleSuperStrict}
-            />
-          </View>
-          <Text style={styles.sheetHint}>
-            Triples the Gentle cooldown (min 60 min). Makes overriding extremely hard.
-          </Text>
-
-          <View style={styles.scheduleDivider} />
-
-          <View style={styles.toggleRow}>
-            <Text style={styles.toggleText}>Guilt jar penalty</Text>
-            <Switch
-              value={blockSettings.penaltyEnabled}
-              onValueChange={handleTogglePenalty}
-            />
-          </View>
-          {blockSettings.penaltyEnabled && (
-            <>
-              <Text style={styles.sheetLabel}>Penalty per override ($)</Text>
-              <TextInput
-                value={String(blockSettings.penaltyAmount)}
-                onChangeText={handleSetPenaltyAmount}
-                keyboardType="number-pad"
-                style={styles.input}
-              />
-              <Text style={styles.sheetHint}>
-                Honor system — tracks how much you owe your guilt jar.
-              </Text>
-            </>
-          )}
-
-          <View style={styles.scheduleDivider} />
-
-          <View style={styles.toggleRow}>
-            <Text style={styles.toggleText}>Scheduled blocking</Text>
-            <Switch
-              value={blockSettings.schedule.enabled}
-              onValueChange={handleToggleSchedule}
-            />
-          </View>
-          <Text style={styles.sheetHint}>
-            Automatically block delivery apps during set hours every day.
-          </Text>
-
-          {blockSettings.schedule.enabled && (
-            <View style={styles.scheduleTimeRow}>
-              <View style={styles.scheduleTimeGroup}>
-                <Text style={styles.scheduleTimeLabel}>From</Text>
-                <View style={styles.scheduleInputRow}>
-                  <TextInput
-                    value={String(blockSettings.schedule.startHour)}
-                    onChangeText={(v) => handleSetScheduleTime('startHour', v)}
-                    keyboardType="number-pad"
-                    style={styles.scheduleInput}
-                    maxLength={2}
-                    placeholder="HH"
-                  />
-                  <Text style={styles.scheduleColon}>:</Text>
-                  <TextInput
-                    value={String(blockSettings.schedule.startMinute).padStart(2, '0')}
-                    onChangeText={(v) => handleSetScheduleTime('startMinute', v)}
-                    keyboardType="number-pad"
-                    style={styles.scheduleInput}
-                    maxLength={2}
-                    placeholder="MM"
-                  />
-                </View>
-              </View>
-              <View style={styles.scheduleTimeGroup}>
-                <Text style={styles.scheduleTimeLabel}>To</Text>
-                <View style={styles.scheduleInputRow}>
-                  <TextInput
-                    value={String(blockSettings.schedule.endHour)}
-                    onChangeText={(v) => handleSetScheduleTime('endHour', v)}
-                    keyboardType="number-pad"
-                    style={styles.scheduleInput}
-                    maxLength={2}
-                    placeholder="HH"
-                  />
-                  <Text style={styles.scheduleColon}>:</Text>
-                  <TextInput
-                    value={String(blockSettings.schedule.endMinute).padStart(2, '0')}
-                    onChangeText={(v) => handleSetScheduleTime('endMinute', v)}
-                    keyboardType="number-pad"
-                    style={styles.scheduleInput}
-                    maxLength={2}
-                    placeholder="MM"
-                  />
-                </View>
-              </View>
-            </View>
-          )}
-
-          {blockState.isShieldActive && (
-            <View style={styles.blockStatusBanner}>
-              <Text style={styles.blockStatusText}>
-                {blockState.activeBlockType === 'budget' ? '🔴 Over-budget' : '❄️ Precautionary'} block is active
+          {blockState.isShieldActive && blockState.activeBlockType === 'budget' && (
+            <View style={[styles.blockStatusBanner, { backgroundColor: modeVisual.modeCardGlow, borderColor: modeVisual.modeCardTint }]}> 
+              <Text style={[styles.blockStatusText, { color: modeVisual.modeCardText }]}> 
+                🔴 Over-budget block is active
               </Text>
             </View>
           )}
         </ScrollView>
       );
     }
+
+    if (activeSettingsScreen === 'faq') {
+      return (
+        <ScrollView contentContainerStyle={styles.scrollContent}>
+          <View style={{ marginBottom: 22, paddingTop: 4 }}>
+            <Pressable onPress={() => setActiveSettingsScreen(null)} style={{ marginBottom: 10 }}>
+              <Text style={{ color: modeVisual.labelColor, fontSize: 13, fontWeight: '700' }}>← Back to settings</Text>
+            </Pressable>
+            <Text style={{ fontSize: 28, fontWeight: '800', color: modeVisual.valueColor, letterSpacing: -0.8 }}>FAQ</Text>
+          </View>
+          {[
+            { q: 'How does blocking work?', a: 'The app evaluates your spending against your budget and selected mode, then applies iOS Screen Time shields to selected delivery apps.' },
+            { q: 'When does my weekly budget reset?', a: 'Your budget is tracked weekly. You can update the weekly amount anytime from Settings > Budget.' },
+            { q: 'Will chat coach history be saved?', a: 'Yes. Chat history is tied to your account and restored when you sign back in.' },
+            { q: 'Can I customize blocker intensity?', a: 'Yes. Choose Gentle, Moderate, or Precautionary and tune cooldowns per mode in Blocker settings.' },
+          ].map((item) => (
+            <View key={item.q} style={{ backgroundColor: modeVisual.cardSurface, borderRadius: 14, borderWidth: 1, borderColor: modeVisual.cardBorder, padding: 14, marginBottom: 10 }}>
+              <Text style={{ color: modeVisual.valueColor, fontSize: 14, fontWeight: '700' }}>{item.q}</Text>
+              <Text style={{ color: modeVisual.labelColor, fontSize: 13, marginTop: 6, lineHeight: 19 }}>{item.a}</Text>
+            </View>
+          ))}
+        </ScrollView>
+      );
+    }
+
+    if (activeSettingsScreen === 'contact') {
+      return (
+        <ScrollView contentContainerStyle={styles.scrollContent}>
+          <View style={{ marginBottom: 22, paddingTop: 4 }}>
+            <Pressable onPress={() => setActiveSettingsScreen(null)} style={{ marginBottom: 10 }}>
+              <Text style={{ color: modeVisual.labelColor, fontSize: 13, fontWeight: '700' }}>← Back to settings</Text>
+            </Pressable>
+            <Text style={{ fontSize: 28, fontWeight: '800', color: modeVisual.valueColor, letterSpacing: -0.8 }}>Contact support</Text>
+          </View>
+          <View style={{ backgroundColor: modeVisual.cardSurface, borderRadius: 14, borderWidth: 1, borderColor: modeVisual.cardBorder, padding: 16 }}>
+            <Text style={{ color: modeVisual.valueColor, fontSize: 14, fontWeight: '700' }}>Need help with billing, blocking, or bugs?</Text>
+            <Text style={{ color: modeVisual.labelColor, fontSize: 13, marginTop: 8, lineHeight: 20 }}>Email us at support@undelivery.app with your account email and a short issue description. We usually respond within 24–48 hours.</Text>
+            <Text style={{ color: modeVisual.labelColor, fontSize: 13, marginTop: 10, lineHeight: 20 }}>For billing issues, include your subscription tier and purchase date to speed up resolution.</Text>
+          </View>
+        </ScrollView>
+      );
+    }
+
+    if (activeSettingsScreen === 'privacy') {
+      return (
+        <ScrollView contentContainerStyle={styles.scrollContent}>
+          <View style={{ marginBottom: 22, paddingTop: 4 }}>
+            <Pressable onPress={() => setActiveSettingsScreen(null)} style={{ marginBottom: 10 }}>
+              <Text style={{ color: modeVisual.labelColor, fontSize: 13, fontWeight: '700' }}>← Back to settings</Text>
+            </Pressable>
+            <Text style={{ fontSize: 28, fontWeight: '800', color: modeVisual.valueColor, letterSpacing: -0.8 }}>Privacy Policy</Text>
+          </View>
+          <View style={{ backgroundColor: modeVisual.cardSurface, borderRadius: 14, borderWidth: 1, borderColor: modeVisual.cardBorder, padding: 16 }}>
+            <Text style={{ color: modeVisual.valueColor, fontSize: 14, fontWeight: '700' }}>Effective date: February 24, 2026</Text>
+            <Text style={{ color: modeVisual.labelColor, fontSize: 13, marginTop: 10, lineHeight: 20 }}>We collect account data (name, email), budget and order data, blocker settings, and chat history to provide core app functionality. We use this data to operate blocking workflows, display reports, and sync progress across sessions.</Text>
+            <Text style={{ color: modeVisual.labelColor, fontSize: 13, marginTop: 10, lineHeight: 20 }}>We do not sell personal data. Subscription status is processed via RevenueCat and Apple. You can request deletion of account data by contacting support@undelivery.app from your account email.</Text>
+            <Text style={{ color: modeVisual.labelColor, fontSize: 13, marginTop: 10, lineHeight: 20 }}>By using the app, you consent to this processing for service delivery, security, analytics required for app operation, and legal compliance.</Text>
+          </View>
+        </ScrollView>
+      );
+    }
+
+    if (activeSettingsScreen === 'terms') {
+      return (
+        <ScrollView contentContainerStyle={styles.scrollContent}>
+          <View style={{ marginBottom: 22, paddingTop: 4 }}>
+            <Pressable onPress={() => setActiveSettingsScreen(null)} style={{ marginBottom: 10 }}>
+              <Text style={{ color: modeVisual.labelColor, fontSize: 13, fontWeight: '700' }}>← Back to settings</Text>
+            </Pressable>
+            <Text style={{ fontSize: 28, fontWeight: '800', color: modeVisual.valueColor, letterSpacing: -0.8 }}>Terms of Use</Text>
+          </View>
+          <View style={{ backgroundColor: modeVisual.cardSurface, borderRadius: 14, borderWidth: 1, borderColor: modeVisual.cardBorder, padding: 16 }}>
+            <Text style={{ color: modeVisual.valueColor, fontSize: 14, fontWeight: '700' }}>Effective date: February 24, 2026</Text>
+            <Text style={{ color: modeVisual.labelColor, fontSize: 13, marginTop: 10, lineHeight: 20 }}>Undelivery provides budgeting and app-blocking assistance tools. It is not financial, medical, or legal advice. You are responsible for your spending and device usage decisions.</Text>
+            <Text style={{ color: modeVisual.labelColor, fontSize: 13, marginTop: 10, lineHeight: 20 }}>Subscriptions auto-renew unless canceled in Apple ID settings at least 24 hours before renewal. Payment is charged to your Apple account according to the selected plan and trial terms shown before purchase.</Text>
+            <Text style={{ color: modeVisual.labelColor, fontSize: 13, marginTop: 10, lineHeight: 20 }}>You agree not to misuse the service, reverse engineer it, or use it in ways that violate applicable law. We may suspend accounts for abuse, fraud, or security risks.</Text>
+          </View>
+        </ScrollView>
+      );
+    }
+
+    return (
+      <ScrollView contentContainerStyle={styles.scrollContent}>
+        <View style={{ marginBottom: 24, paddingTop: 4 }}>
+          <Text style={{ fontSize: 28, fontWeight: '800', color: modeVisual.valueColor, letterSpacing: -0.8 }}>Settings</Text>
+        </View>
+
+        <View style={{ backgroundColor: modeVisual.cardSurface, borderRadius: 20, borderWidth: 1, borderColor: modeVisual.cardBorder, overflow: 'hidden', marginBottom: 12 }}>
+          {[
+            { label: 'Account', value: '→', onPress: () => setActiveSettingsScreen('account') },
+            { label: 'Budget', value: `$${weeklyBudget} / week`, onPress: () => setActiveSheet('budget') },
+            { label: 'App blocker', value: blockState.isShieldActive ? '🔴 Blocking' : blockSettings.enabled ? '🟢 Ready' : 'Off', onPress: () => setActiveSettingsScreen('blocker') },
+            { label: 'Rate us', value: 'App Store', onPress: () => { void handleRateApp(); } },
+            { label: 'Privacy policy', value: '→', onPress: () => setActiveSettingsScreen('privacy') },
+            { label: 'Terms of use', value: '→', onPress: () => setActiveSettingsScreen('terms') },
+          ].map((row, i, arr) => (
+            <Pressable
+              key={row.label}
+              onPress={row.onPress}
+              style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 18, paddingVertical: 16, borderBottomWidth: i < arr.length - 1 ? 1 : 0, borderBottomColor: modeVisual.cardBorder }}
+            >
+              <Text style={{ color: modeVisual.valueColor, fontWeight: '600', fontSize: 15 }}>{row.label}</Text>
+              <Text style={{ color: modeVisual.labelColor, fontWeight: '600', fontSize: 14 }}>{row.value}</Text>
+            </Pressable>
+          ))}
+        </View>
+
+        <View style={{ backgroundColor: modeVisual.cardSurface, borderRadius: 20, borderWidth: 1, borderColor: modeVisual.cardBorder, overflow: 'hidden', marginBottom: 12 }}>
+          {[
+            { label: 'FAQ', value: 'Open', onPress: () => setActiveSettingsScreen('faq') },
+            { label: 'Contact support', value: 'Open', onPress: () => setActiveSettingsScreen('contact') },
+          ].map((row, i, arr) => (
+            <Pressable
+              key={row.label}
+              onPress={row.onPress}
+              style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 18, paddingVertical: 16, borderBottomWidth: i < arr.length - 1 ? 1 : 0, borderBottomColor: modeVisual.cardBorder }}
+            >
+              <Text style={{ color: modeVisual.valueColor, fontWeight: '600', fontSize: 15 }}>{row.label}</Text>
+              <Text style={{ color: modeVisual.labelColor, fontWeight: '600', fontSize: 14 }}>{row.value}</Text>
+            </Pressable>
+          ))}
+        </View>
+
+        <View style={{ backgroundColor: modeVisual.cardSurface, borderRadius: 20, borderWidth: 1, borderColor: modeVisual.cardBorder, overflow: 'hidden', marginBottom: 12 }}>
+          <Pressable
+            onPress={onSignOut}
+            style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 18, paddingVertical: 16 }}
+          >
+            <Text style={{ color: '#FF4444', fontWeight: '600', fontSize: 15 }}>Sign out</Text>
+            <Text style={{ color: modeVisual.dimText, fontWeight: '600', fontSize: 14 }}>↗</Text>
+          </Pressable>
+        </View>
+      </ScrollView>
+    );
+  };
+
+  const sheetBg = modeVisual.modeCardBase;
+  const sheetBorder = modeVisual.modeCardGlow;
+  const sheetTitleColor = modeVisual.valueColor;
+  const sheetCloseColor = modeVisual.labelColor;
+  const sheetLabelColor = modeVisual.labelColor;
+  const sheetHintColor = modeVisual.dimText;
+  const sheetInputBg = modeVisual.cardSurface;
+  const sheetInputBorder = modeVisual.cardBorder;
+  const sheetInputText = modeVisual.valueColor;
+  const sheetDividerColor = modeVisual.cardBorder;
+
+  const renderSheet = () => {
+    if (!activeSheet) return null;
+    if (activeSheet === 'budget') {
+      return (
+        <Modal
+          visible
+          transparent
+          animationType="fade"
+          onRequestClose={() => setActiveSheet(null)}
+        >
+          <View style={styles.reminderOverlayBackdrop}>
+            <View style={[styles.reminderOverlayCard, { backgroundColor: sheetBg, borderColor: sheetBorder }]}> 
+              <View style={styles.sheetHeader}>
+                <Text style={[styles.sheetTitle, { color: sheetTitleColor }]}>Budget settings</Text>
+                <Pressable onPress={() => setActiveSheet(null)}>
+                  <Text style={[styles.sheetClose, { color: sheetCloseColor }]}>Close</Text>
+                </Pressable>
+              </View>
+              <Text style={[styles.sheetLabel, { color: sheetLabelColor }]}>Weekly budget</Text>
+              <TextInput
+                value={String(weeklyBudget)}
+                onChangeText={(value) => {
+                  const num = Number.parseInt(value || '0', 10);
+                  setWeeklyBudget(num);
+                  void updateBudget({ weekly_limit: num });
+                }}
+                keyboardType="number-pad"
+                style={[styles.input, { backgroundColor: sheetInputBg, borderColor: sheetInputBorder, color: sheetInputText }]}
+              />
+              <Text style={[styles.sheetHint, { color: sheetHintColor }]}>Blocks trigger once you hit the limit.</Text>
+            </View>
+          </View>
+        </Modal>
+      );
+    }
     if (activeSheet === 'opportunity') {
       return (
-        <View style={styles.sheet}>
+        <View style={[styles.sheet, { backgroundColor: sheetBg, borderColor: sheetBorder }]}> 
           <View style={styles.sheetHeader}>
-            <Text style={styles.sheetTitle}>Opportunity cost</Text>
+            <Text style={[styles.sheetTitle, { color: sheetTitleColor }]}>Opportunity cost</Text>
             <Pressable onPress={() => setActiveSheet(null)}>
-              <Text style={styles.sheetClose}>Close</Text>
+              <Text style={[styles.sheetClose, { color: sheetCloseColor }]}>Close</Text>
             </Pressable>
           </View>
-          <Text style={styles.sheetLabel}>Order amount</Text>
+          <Text style={[styles.sheetLabel, { color: sheetLabelColor }]}>Order amount</Text>
           <TextInput
             value={opportunityAmount}
             onChangeText={setOpportunityAmount}
             keyboardType="decimal-pad"
-            style={styles.input}
+            style={[styles.input, { backgroundColor: sheetInputBg, borderColor: sheetInputBorder, color: sheetInputText }]}
           />
           {GOALS.map((goal) => {
             const amount = Number.parseFloat(opportunityAmount) || 0;
             const ratio = Math.min(amount / goal.target, 1);
             return (
-              <View key={goal.id} style={styles.goalRow}>
+              <View key={goal.id} style={[styles.goalRow, { borderBottomColor: sheetDividerColor }]}>
                 <View>
-                  <Text style={styles.goalTitle}>{goal.title}</Text>
-                  <Text style={styles.goalHint}>
+                  <Text style={[styles.goalTitle, { color: sheetTitleColor }]}>{goal.title}</Text>
+                  <Text style={[styles.goalHint, { color: sheetHintColor }]}>
                     {goal.unit}{amount.toFixed(0)} / {goal.unit}{goal.target}
                   </Text>
                 </View>
-                <View style={styles.goalTrack}>
-                  <View style={[styles.goalFill, { width: `${ratio * 100}%` }]} />
+                <View style={[styles.goalTrack, { backgroundColor: sheetInputBorder }]}>
+                  <View style={[styles.goalFill, { width: `${ratio * 100}%`, backgroundColor: modeVisual.accentGlow }]} />
                 </View>
               </View>
             );
@@ -1563,33 +1725,7 @@ export default function MainDashboard({
         </View>
       );
     }
-    return (
-      <Modal
-        visible
-        transparent
-        animationType="fade"
-        onRequestClose={() => setActiveSheet(null)}
-      >
-        <View style={styles.reminderOverlayBackdrop}>
-          <View style={styles.reminderOverlayCard}>
-            <View style={styles.sheetHeader}>
-              <Text style={styles.sheetTitle}>Reminders</Text>
-              <Pressable onPress={() => setActiveSheet(null)}>
-                <Text style={styles.sheetClose}>Close</Text>
-              </Pressable>
-            </View>
-            <View style={styles.toggleRow}>
-              <Text style={styles.toggleText}>Daily budget reminders</Text>
-              <Switch value={budgetReminders} onValueChange={setBudgetReminders} />
-            </View>
-            <View style={styles.toggleRow}>
-              <Text style={styles.toggleText}>Cooking ideas before meals</Text>
-              <Switch value={cookingIdeas} onValueChange={setCookingIdeas} />
-            </View>
-          </View>
-        </View>
-      </Modal>
-    );
+    return null;
   };
 
   const renderContent = () => {
@@ -1600,8 +1736,8 @@ export default function MainDashboard({
         return renderOrders();
       case 'reports':
         return renderReports();
-      case 'bridge':
-        return renderBridge();
+      case 'chat':
+        return renderChat();
       case 'settings':
         return renderSettings();
       default:
@@ -1611,11 +1747,13 @@ export default function MainDashboard({
 
   if (isLoading) {
     return (
-      <SafeAreaView style={styles.container}>
-        <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
-          <Text style={{ color: COLORS.muted, fontSize: 16 }}>Loading your data…</Text>
-        </View>
-      </SafeAreaView>
+      <View style={[styles.container, { backgroundColor: '#0A0A12' }]}>
+        <SafeAreaView style={[styles.container, { backgroundColor: 'transparent' }]}>
+          <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
+            <Text style={{ color: '#4A5580', fontSize: 15, fontWeight: '600' }}>Loading your data…</Text>
+          </View>
+        </SafeAreaView>
+      </View>
     );
   }
 
@@ -1625,10 +1763,13 @@ export default function MainDashboard({
         blockType={blockState.activeBlockType}
         mode={blockSettings.mode}
         cooldownMinutes={blockingService.getEffectiveCooldown()}
-        penaltyAmount={blockSettings.penaltyEnabled ? blockSettings.penaltyAmount : null}
+        penaltyAmount={null}
         totalSpend={totalSpend}
         weeklyBudget={weeklyBudget}
+        savingsGoals={savingsGoals}
+        onChooseHealthyOption={handleHealthyOptionChosen}
         onComplete={() => {
+          setLastOverrideAt(Date.now());
           setShowOverrideFlow(false);
           refreshBlockState();
         }}
@@ -1637,69 +1778,47 @@ export default function MainDashboard({
     );
   }
 
-  if (showScreenTimeTest) {
-    return <ScreenTimeTest onBack={() => setShowScreenTimeTest(false)} />;
-  }
+  const rootBg = modeVisual.modeCardBase;
+  const tabBarBg = modeVisual.navBg;
+  const tabBarBorder = modeVisual.navBorder;
+  const tabTextColor = modeVisual.navText;
+  const tabActiveTextColor = modeVisual.navActiveText;
+  const tabActiveBg = modeVisual.navActiveBg;
 
-  const isModeThemedTab =
-    activeTab === 'home' ||
-    activeTab === 'orders' ||
-    activeTab === 'bridge' ||
-    activeTab === 'reports' ||
-    activeTab === 'settings';
-  const containerBg = isModeThemedTab ? '#FFFFFF' : COLORS.cream;
-  const tabBarBg = isModeThemedTab ? modeVisual.navBg : COLORS.white;
-  const tabBarBorder = isModeThemedTab ? modeVisual.navBorder : COLORS.border;
-  const tabTextColor = isModeThemedTab ? modeVisual.navText : COLORS.muted;
-  const tabActiveTextColor = isModeThemedTab ? modeVisual.navActiveText : COLORS.ink;
-  const tabActiveBg = isModeThemedTab ? modeVisual.navActiveBg : COLORS.cream;
-
-  const content = (
-    <SafeAreaView style={[styles.container, { backgroundColor: isModeThemedTab ? 'transparent' : containerBg }]}> 
-      {renderContent()}
-      {renderSheet()}
-      <View style={[styles.tabBar, { backgroundColor: tabBarBg, borderColor: tabBarBorder }]}> 
-        {([
-          { key: 'home' },
-          { key: 'orders' },
-          { key: 'bridge' },
-          { key: 'reports' },
-          { key: 'settings' },
-        ] as { key: TabKey }[]).map((tab) => (
-          <Pressable
-            key={tab.key}
-            onPress={() => setActiveTab(tab.key)}
-            style={[styles.tabItem, activeTab === tab.key && { backgroundColor: tabActiveBg }]}
-          >
-            <View style={styles.tabIconWrap}>
-              <NavIcon tab={tab.key} color={activeTab === tab.key ? tabActiveTextColor : tabTextColor} />
-            </View>
-            {activeTab === tab.key ? <View style={[styles.tabDot, { backgroundColor: tabActiveTextColor }]} /> : null}
-          </Pressable>
-        ))}
-      </View>
-    </SafeAreaView>
+  return (
+    <View style={[styles.container, { backgroundColor: rootBg }]}>
+      <SafeAreaView style={[styles.container, { backgroundColor: 'transparent' }]}>
+        {renderContent()}
+        {renderSheet()}
+        <View style={[styles.tabBar, { backgroundColor: tabBarBg, borderColor: tabBarBorder }]}>
+          {([
+            { key: 'home' },
+            { key: 'orders' },
+            { key: 'chat' },
+            { key: 'reports' },
+            { key: 'settings' },
+          ] as { key: TabKey }[]).map((tab) => (
+            <Pressable
+              key={tab.key}
+              onPress={() => setActiveTab(tab.key)}
+              style={[styles.tabItem, activeTab === tab.key && { backgroundColor: tabActiveBg }]}
+            >
+              <View style={styles.tabIconWrap}>
+                <NavIcon tab={tab.key} color={activeTab === tab.key ? tabActiveTextColor : tabTextColor} />
+              </View>
+              {activeTab === tab.key ? <View style={[styles.tabDot, { backgroundColor: tabActiveTextColor }]} /> : null}
+            </Pressable>
+          ))}
+        </View>
+      </SafeAreaView>
+    </View>
   );
-
-  if (isModeThemedTab) {
-    return (
-      <ImageBackground
-        source={homeBackgroundSource}
-        style={styles.container}
-        imageStyle={{ resizeMode: 'cover' }}
-      >
-        {content}
-      </ImageBackground>
-    );
-  }
-
-  return content;
 }
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: COLORS.cream,
+    backgroundColor: '#0A0A12',
   },
   scrollContent: {
     padding: 24,
@@ -1754,11 +1873,9 @@ const styles = StyleSheet.create({
   reminderOverlayCard: {
     width: '100%',
     maxWidth: 520,
-    backgroundColor: COLORS.white,
     borderRadius: 20,
     padding: 18,
     borderWidth: 1,
-    borderColor: COLORS.border,
   },
   summaryLabel: {
     color: COLORS.muted,
@@ -2065,12 +2182,9 @@ const styles = StyleSheet.create({
   },
   input: {
     borderWidth: 1,
-    borderColor: COLORS.border,
     borderRadius: 14,
     paddingHorizontal: 14,
     paddingVertical: 10,
-    color: COLORS.ink,
-    backgroundColor: COLORS.white,
     marginBottom: 12,
   },
   primaryButton: {
@@ -2163,11 +2277,10 @@ const styles = StyleSheet.create({
     left: 16,
     right: 16,
     bottom: 90,
-    backgroundColor: COLORS.white,
-    borderRadius: 20,
-    padding: 18,
+    borderRadius: 24,
+    padding: 20,
     borderWidth: 1,
-    borderColor: COLORS.border,
+    maxHeight: '75%',
   },
   sheetHeader: {
     flexDirection: 'row',
@@ -2176,24 +2289,23 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   sheetTitle: {
-    fontWeight: '700',
-    fontSize: 16,
-    color: COLORS.ink,
+    fontWeight: '800',
+    fontSize: 17,
   },
   sheetClose: {
-    color: COLORS.coral,
     fontWeight: '600',
+    fontSize: 14,
   },
   sheetLabel: {
-    color: COLORS.muted,
-    fontSize: 12,
+    fontSize: 11,
     textTransform: 'uppercase',
     letterSpacing: 1.2,
     marginBottom: 8,
+    fontWeight: '700',
   },
   sheetHint: {
-    color: COLORS.muted,
     fontSize: 12,
+    lineHeight: 17,
   },
   blockRow: {
     flexDirection: 'row',
@@ -2238,8 +2350,8 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
   },
   toggleText: {
-    color: COLORS.ink,
     fontWeight: '600',
+    fontSize: 14,
   },
   tabBar: {
     position: 'absolute',
@@ -2255,10 +2367,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
     paddingVertical: 8,
     shadowColor: '#000000',
-    shadowOpacity: 0.1,
-    shadowRadius: 10,
-    shadowOffset: { width: 0, height: 6 },
-    elevation: 7,
+    shadowOpacity: 0.5,
+    shadowRadius: 20,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 10,
   },
   tabItem: {
     flex: 1,
@@ -2306,16 +2418,13 @@ const styles = StyleSheet.create({
   },
   blockStatusBanner: {
     marginTop: 16,
-    backgroundColor: '#FFF0F0',
     borderRadius: 14,
     padding: 14,
     alignItems: 'center',
     borderWidth: 1,
-    borderColor: '#FFD0D0',
   },
   blockStatusText: {
     fontWeight: '700',
-    color: '#D32F2F',
     fontSize: 15,
   },
   overrideTriggerButton: {
@@ -2360,12 +2469,9 @@ const styles = StyleSheet.create({
   },
   scheduleInput: {
     borderWidth: 1,
-    borderColor: COLORS.border,
     borderRadius: 10,
     paddingHorizontal: 12,
     paddingVertical: 10,
-    color: COLORS.ink,
-    backgroundColor: COLORS.white,
     fontSize: 18,
     fontWeight: '700',
     width: 52,
@@ -2374,7 +2480,6 @@ const styles = StyleSheet.create({
   scheduleColon: {
     fontSize: 20,
     fontWeight: '700',
-    color: COLORS.ink,
     marginHorizontal: 4,
   },
   reportSectionRow: {

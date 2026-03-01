@@ -4,15 +4,35 @@ import UIKit
 
 class ShieldConfigurationExtension: ShieldConfigurationDataSource {
 
+  private let appGroupSuite = "group.com.quitbite.quitbite"
+  private let blockTypeKey = "shield_block_type"
+
+  private func subtitleText(for blockType: String) -> String {
+    if blockType == "precau" {
+      return "Precautionary mode is protecting your focus right now.\nOpen QuitBite to override."
+    }
+    return "You've hit your delivery budget for this cycle.\nOpen QuitBite to override."
+  }
+
+  private func resolveIcon() -> UIImage? {
+    if let appIcon = UIImage(named: "AppIcon60x60") ?? UIImage(named: "AppIcon") {
+      return appIcon
+    }
+    return UIImage(systemName: "flame.fill")
+  }
+
   private func buildConfig() -> ShieldConfiguration {
+    let defaults = UserDefaults(suiteName: appGroupSuite)
+    let blockType = defaults?.string(forKey: blockTypeKey) ?? "budget"
+
     let title = ShieldConfiguration.Label(
       text: "Blocked by QuitBite",
-      color: UIColor(red: 0.10, green: 0.10, blue: 0.18, alpha: 1.0)
+      color: UIColor(red: 0.97, green: 0.98, blue: 1.0, alpha: 1.0)
     )
 
     let subtitle = ShieldConfiguration.Label(
-      text: "You've hit your delivery budget.\nTap below to get a link to QuitBite.",
-      color: UIColor(red: 0.56, green: 0.56, blue: 0.58, alpha: 1.0)
+      text: subtitleText(for: blockType),
+      color: UIColor(red: 0.78, green: 0.82, blue: 0.91, alpha: 1.0)
     )
 
     let primaryButton = ShieldConfiguration.Label(
@@ -21,18 +41,18 @@ class ShieldConfigurationExtension: ShieldConfigurationDataSource {
     )
 
     let secondaryButton = ShieldConfiguration.Label(
-      text: "Stay Focused",
-      color: UIColor(red: 0.29, green: 0.42, blue: 0.97, alpha: 1.0)
+      text: "Keep me blocked",
+      color: UIColor(red: 0.66, green: 0.76, blue: 1.0, alpha: 1.0)
     )
 
     return ShieldConfiguration(
-      backgroundBlurStyle: .systemUltraThinMaterial,
-      backgroundColor: UIColor.white,
-      icon: nil,
+      backgroundBlurStyle: .systemChromeMaterialDark,
+      backgroundColor: UIColor(red: 0.05, green: 0.08, blue: 0.16, alpha: 0.98),
+      icon: resolveIcon(),
       title: title,
       subtitle: subtitle,
       primaryButtonLabel: primaryButton,
-      primaryButtonBackgroundColor: UIColor(red: 0.29, green: 0.42, blue: 0.97, alpha: 1.0),
+      primaryButtonBackgroundColor: UIColor(red: 0.20, green: 0.46, blue: 0.98, alpha: 1.0),
       secondaryButtonLabel: secondaryButton
     )
   }

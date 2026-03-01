@@ -14,7 +14,6 @@ import {
   ScrollView,
   StatusBar,
   StyleSheet,
-  Switch,
   Text,
   TextInput,
   View,
@@ -26,25 +25,41 @@ import { supabase } from './supabaseClient';
 import { saveOnboardingData } from './DataService';
 
 const COLORS = {
-  navy: '#1A1A2E',
-  navySoft: '#2D2D44',
-  sky: '#F5E6D3',
-  skySoft: '#FAF3EB',
-  ink: '#1A1A2E',
-  muted: '#8E8E93',
+  navy: '#0F1A2E',
+  navySoft: '#1C2940',
+  sky: '#F0F4FF',
+  skySoft: '#F7F9FF',
+  ink: '#1A2138',
+  inkSoft: '#3D4663',
+  muted: '#8892A8',
   white: '#FFFFFF',
-  cream: '#FAF8F5',
+  cream: '#F8FAFF',
   coral: '#E8734A',
-  sage: '#7BAE7F',
-  gold: '#D4A853',
-  warmGray: '#F2EFEB',
-  softBorder: '#E8E4DF',
+  sage: '#5EC26A',
+  gold: '#F0B429',
+  warmGray: '#EEF1F8',
+  softBorder: '#E2E8F4',
+  accent: '#4A7CFF',
+  accentSoft: '#E8EFFE',
+  accentLight: '#6B9AFF',
+  cardBg: '#FFFFFF',
+  screenBg: '#F4F7FE',
 };
 
 const PRO_ENTITLEMENT_ID = 'undelivery Pro';
-const ONBOARDING_DRAFT_KEY = '@onboarding_draft_v1';
-const { ScreenTimeManager, NotificationPermissionManager } = NativeModules;
+const ONBOARDING_DRAFT_KEY_PREFIX = '@onboarding_draft_v2';
+const MIN_WEEKLY_BUDGET = 10;
+const MAX_WEEKLY_BUDGET = 200;
+const { ScreenTimeManager } = NativeModules;
+
+const getOnboardingDraftKey = async (): Promise<string> => {
+  const { data } = await supabase.auth.getUser();
+  return `${ONBOARDING_DRAFT_KEY_PREFIX}_${data?.user?.id ?? 'guest'}`;
+};
 const IOS_BUNDLE_ID = 'com.quitbite.quitbite';
+const TERMS_URL = 'https://undelivery.app/terms';
+const PRIVACY_URL = 'https://undelivery.app/privacy';
+const REQUIRED_AFFIRMATION = 'I commit to protecting my health and money by reducing food delivery this week.';
 const SUBSCRIPTION_PRODUCT_IDS = {
   weekly: 'com.quitbite.quitbite.weekly',
   monthly: 'com.quitbite.quitbite.monthly',
@@ -81,15 +96,18 @@ const SCREENS = [
     key: 'q3',
     type: 'choice',
     label: 'Question 3',
-    question: "What\u2019s the main reason you order delivery?",
+    question: 'What are your main reasons for ordering delivery?',
     options: ['Convenience', 'Cravings', 'No time to cook', 'Stress/comfort', 'Habit'],
+    multiSelect: true,
   },
   {
     key: 'q4',
-    type: 'choice',
+    type: 'wheel',
     label: 'Question 4',
     question: 'How old are you?',
-    options: ['Under 18', '18\u201324', '25\u201334', '35\u201344', '45+'],
+    options: Array.from({ length: 111 }, (_, i) => `${i + 10}`),
+    suffix: 'years old',
+    cta: 'Confirm',
   },
   {
     key: 'q5',
@@ -163,26 +181,26 @@ const SCREENS = [
     key: 'help-2',
     type: 'help',
     title: 'The bridge to simple cooking',
-    body: 'Get quick, realistic steps that move you from delivery dependence to easy home meals.',
+    body: 'Get quick, realistic steps that help you cook easy home meals',
   },
   {
     key: 'help-3',
     type: 'help',
     title: 'See the opportunity cost',
-    body: "Every order shows what you\u2019re trading away, so it\u2019s easier to choose your goals.",
+    body: "Every order shows what you're trading away, so it's easier to make your choice",
   },
   {
     key: 'showcase-1',
     type: 'showcase',
     title: 'Block apps when you overspend',
-    body: 'QuitBite automatically shields delivery apps once you hit your weekly budget \u2014 no willpower needed.',
+    body: 'QuitBite automatically blocks delivery apps once you hit your weekly budget.',
     showcaseImage: 'block',
   },
   {
     key: 'showcase-2',
     type: 'showcase',
     title: 'Track every dollar in real time',
-    body: 'See exactly where your money goes with weekly breakdowns, streaks, and opportunity cost insights.',
+    body: 'See exactly where your money goes with weekly breakdowns, streaks and reports.',
     showcaseImage: 'track',
   },
   {
@@ -192,10 +210,18 @@ const SCREENS = [
     body: '',
   },
   {
-    key: 'placeholder-2',
-    type: 'placeholder',
-    title: '',
-    body: '',
+    key: 'financial-goal',
+    type: 'choice',
+    label: 'Money goal',
+    question: 'What would you love to do with the money you save?',
+    options: [
+      'Build a safety fund for emergencies',
+      'Pay off credit card or other debt',
+      'Save for a trip or vacation',
+      'Save to buy something important',
+      'Build long-term wealth and invest',
+    ],
+    multiSelect: true,
   },
   {
     key: 'permission',
@@ -203,12 +229,6 @@ const SCREENS = [
     title: 'Allow app blocking',
     body:
       'QuitBite needs Screen Time permission to block delivery apps when you hit your budget.',
-  },
-  {
-    key: 'notifications',
-    type: 'notifications',
-    title: 'Enable helpful reminders',
-    body: 'Get nudges that keep you on track and cooking instead of ordering.',
   },
   {
     key: 'select-apps',
@@ -220,8 +240,7 @@ const SCREENS = [
     key: 'rating',
     type: 'rating',
     title: 'Give us a rating!',
-    body:
-      'This app was designed for people like you. The higher the rating, the more we can help others.',
+    body: 'This helps us deliver more of what you need.',
   },
   {
     key: 'commitment',
@@ -235,6 +254,12 @@ const SCREENS = [
     title: "You're now prepared to reset.",
   },
   {
+    key: 'auth-choice',
+    type: 'auth-choice',
+    title: 'Welcome',
+    body: 'Choose how you want to get started.',
+  },
+  {
     key: 'auth-signup',
     type: 'auth-sign-up',
     title: 'Sign up to continue',
@@ -243,7 +268,7 @@ const SCREENS = [
   {
     key: 'auth-signin',
     type: 'auth-sign-in',
-    title: 'Sign in to continue',
+    title: 'Sign In',
     body: 'Use one of the following ways to sign in to your account.',
   },
   {
@@ -265,13 +290,22 @@ const SCREENS = [
   },
 ];
 
-export default function Onboarding({ onSkipToDashboard, onOnboardingComplete }: { onSkipToDashboard?: () => void; onOnboardingComplete?: () => void }) {
-  const [step, setStep] = useState(0);
-  const [answers, setAnswers] = useState<Record<string, number>>({});
+export default function Onboarding({
+  onSkipToDashboard,
+  onOnboardingComplete,
+  startAtWelcome = false,
+}: {
+  onSkipToDashboard?: () => void;
+  onOnboardingComplete?: () => void;
+  startAtWelcome?: boolean;
+}) {
+  const authChoiceIndex = SCREENS.findIndex((screen) => screen.type === 'auth-choice');
+  const welcomeIndex = SCREENS.findIndex((screen) => screen.type === 'welcome');
+  const initialStep = startAtWelcome && welcomeIndex !== -1 ? welcomeIndex : authChoiceIndex !== -1 ? authChoiceIndex : 0;
+  const [step, setStep] = useState(initialStep);
+  const [answers, setAnswers] = useState<Record<string, number | number[]>>({});
   const [name, setName] = useState('');
   const [weeklyBudget, setWeeklyBudget] = useState('100');
-  const [budgetReminders, setBudgetReminders] = useState(true);
-  const [cookingIdeas, setCookingIdeas] = useState(true);
   const [selectedPlan, setSelectedPlan] = useState<'weekly' | 'monthly' | 'annual' | null>('monthly');
   const [didSignIn, setDidSignIn] = useState(false);
   const [authEmail, setAuthEmail] = useState('');
@@ -279,12 +313,15 @@ export default function Onboarding({ onSkipToDashboard, onOnboardingComplete }: 
   const [authError, setAuthError] = useState<string | null>(null);
   const [authLoading, setAuthLoading] = useState(false);
   const [authComplete, setAuthComplete] = useState(false);
+  const [authUserId, setAuthUserId] = useState<string | null>(null);
+  const [authSignInOnlyFromWelcome, setAuthSignInOnlyFromWelcome] = useState(false);
   const [onboardingSaved, setOnboardingSaved] = useState(false);
   const [onboardingSaving, setOnboardingSaving] = useState(false);
   const [packages, setPackages] = useState<any[]>([]);
   const [isLoadingOfferings, setIsLoadingOfferings] = useState(false);
   const [offeringsError, setOfferingsError] = useState<string | null>(null);
   const [isPurchasing, setIsPurchasing] = useState(false);
+  const [isRestoringPurchase, setIsRestoringPurchase] = useState(false);
   const [showPlanOverlay, setShowPlanOverlay] = useState(false);
   const [customerInfo, setCustomerInfo] = useState<any | null>(null);
   const [selectedAppCount, setSelectedAppCount] = useState(0);
@@ -292,6 +329,10 @@ export default function Onboarding({ onSkipToDashboard, onOnboardingComplete }: 
   const ratingPromptShownRef = useRef(false);
   const totalSteps = SCREENS.length;
   const current = SCREENS[step];
+  const parsedWeeklyBudget = Number.parseInt(weeklyBudget, 10);
+  const isWeeklyBudgetValid = Number.isFinite(parsedWeeklyBudget)
+    && parsedWeeklyBudget >= MIN_WEEKLY_BUDGET
+    && parsedWeeklyBudget <= MAX_WEEKLY_BUDGET;
   const oauthRedirectUrl = 'com.quitbite.quitbite://login-callback';
 
   const resolvePackageForPlan = (plan: 'weekly' | 'monthly' | 'annual') => {
@@ -329,9 +370,11 @@ export default function Onboarding({ onSkipToDashboard, onOnboardingComplete }: 
   };
 
   useEffect(() => {
+    if (startAtWelcome) return;
     const restoreDraft = async () => {
       try {
-        const raw = await AsyncStorage.getItem(ONBOARDING_DRAFT_KEY);
+        const draftKey = await getOnboardingDraftKey();
+        const raw = await AsyncStorage.getItem(draftKey);
         if (!raw) return;
         const draft = JSON.parse(raw);
         if (typeof draft.step === 'number') setStep(draft.step);
@@ -339,29 +382,26 @@ export default function Onboarding({ onSkipToDashboard, onOnboardingComplete }: 
         if (typeof draft.weeklyBudget === 'string') setWeeklyBudget(draft.weeklyBudget);
         if (typeof draft.affirmation === 'string') setAffirmation(draft.affirmation);
         if (typeof draft.selectedAppCount === 'number') setSelectedAppCount(draft.selectedAppCount);
-        if (typeof draft.budgetReminders === 'boolean') setBudgetReminders(draft.budgetReminders);
-        if (typeof draft.cookingIdeas === 'boolean') setCookingIdeas(draft.cookingIdeas);
         if (draft.answers && typeof draft.answers === 'object') setAnswers(draft.answers);
       } catch (error) {
         console.warn('Failed to restore onboarding draft', error);
       }
     };
     void restoreDraft();
-  }, []);
+  }, [startAtWelcome]);
 
   useEffect(() => {
     const saveDraft = async () => {
       try {
+        const draftKey = await getOnboardingDraftKey();
         await AsyncStorage.setItem(
-          ONBOARDING_DRAFT_KEY,
+          draftKey,
           JSON.stringify({
             step,
             name,
             weeklyBudget,
             affirmation,
             selectedAppCount,
-            budgetReminders,
-            cookingIdeas,
             answers,
           }),
         );
@@ -376,8 +416,6 @@ export default function Onboarding({ onSkipToDashboard, onOnboardingComplete }: 
     weeklyBudget,
     affirmation,
     selectedAppCount,
-    budgetReminders,
-    cookingIdeas,
     answers,
   ]);
 
@@ -491,6 +529,28 @@ export default function Onboarding({ onSkipToDashboard, onOnboardingComplete }: 
   };
 
   const handleBack = () => {
+    // Custom auth back flow
+    if (current.type === 'auth-sign-in') {
+      const choiceIndex = SCREENS.findIndex((screen) => screen.type === 'auth-choice');
+      if (choiceIndex !== -1) {
+        setStep(choiceIndex);
+        return;
+      }
+    }
+    if (current.type === 'auth-email-sign-in') {
+      const signInIndex = SCREENS.findIndex((screen) => screen.type === 'auth-sign-in');
+      if (signInIndex !== -1) {
+        setStep(signInIndex);
+        return;
+      }
+    }
+    if (current.type === 'auth-email-sign-up') {
+      const signUpIndex = SCREENS.findIndex((screen) => screen.type === 'auth-sign-up');
+      if (signUpIndex !== -1) {
+        setStep(signUpIndex);
+        return;
+      }
+    }
     setStep((prev) => Math.max(0, prev - 1));
   };
 
@@ -511,50 +571,6 @@ export default function Onboarding({ onSkipToDashboard, onOnboardingComplete }: 
       Alert.alert('Access granted', 'Screen Time permission enabled.');
     } catch (error: any) {
       Alert.alert('Permission failed', error?.message ?? 'Unable to enable Screen Time access.');
-    }
-  };
-
-  const requestNotificationPermission = async () => {
-    if (!NotificationPermissionManager?.requestAuthorization) {
-      Alert.alert('Unavailable', 'Notification permission is not available on this device.');
-      return false;
-    }
-    try {
-      const granted = await NotificationPermissionManager.requestAuthorization();
-      if (!granted) {
-        Alert.alert('Permission denied', 'Please allow notifications to enable reminders.');
-      }
-      return granted;
-    } catch (error: any) {
-      Alert.alert('Permission failed', error?.message ?? 'Unable to enable notifications.');
-      return false;
-    }
-  };
-
-  const handleNotificationToggle = async (type: 'budget' | 'cooking', value: boolean) => {
-    if (!value) {
-      if (type === 'budget') {
-        setBudgetReminders(false);
-      } else {
-        setCookingIdeas(false);
-      }
-      return;
-    }
-
-    const granted = await requestNotificationPermission();
-    if (type === 'budget') {
-      setBudgetReminders(granted);
-    } else {
-      setCookingIdeas(granted);
-    }
-  };
-
-  const handleNotificationPreference = async (type: 'budget' | 'cooking') => {
-    const granted = await requestNotificationPermission();
-    if (type === 'budget') {
-      setBudgetReminders(granted);
-    } else {
-      setCookingIdeas(granted);
     }
   };
 
@@ -601,10 +617,12 @@ export default function Onboarding({ onSkipToDashboard, onOnboardingComplete }: 
       const { data } = await supabase.auth.getSession();
       if (!isMounted) return;
       setAuthComplete(Boolean(data.session?.user));
+      setAuthUserId(data.session?.user?.id ?? null);
     };
     void loadSession();
     const { data: listener } = supabase.auth.onAuthStateChange((_event, newSession) => {
       setAuthComplete(Boolean(newSession?.user));
+      setAuthUserId(newSession?.user?.id ?? null);
     });
     return () => {
       isMounted = false;
@@ -613,41 +631,81 @@ export default function Onboarding({ onSkipToDashboard, onOnboardingComplete }: 
   }, []);
 
   const buildQuizAnswers = () => {
-    return Object.entries(answers).reduce<Record<string, string | number>>((acc, [key, index]) => {
+    return Object.entries(answers).reduce<Record<string, string | number>>((acc, [key, selectedValue]) => {
       const screen = SCREENS.find((item) => item.key === key);
       const options = (screen as any)?.options ?? [];
+      if (Array.isArray(selectedValue)) {
+        acc[key] = selectedValue
+          .map((index) => options?.[index] ?? index)
+          .join(', ');
+        return acc;
+      }
       if ((screen as any)?.type === 'wheel') {
-        const option = options?.[index] ?? index;
+        const option = options?.[selectedValue] ?? selectedValue;
+        if (key === 'q4') {
+          const parsedAge = Number.parseInt(String(option), 10);
+          acc[key] = Number.isFinite(parsedAge) ? parsedAge : option;
+          return acc;
+        }
         const suffix = (screen as any)?.suffix ?? '';
         acc[key] = `${option} ${suffix}`.trim();
         return acc;
       }
       if ((screen as any)?.type === 'choice') {
-        acc[key] = options?.[index] ?? index;
+        acc[key] = options?.[selectedValue] ?? selectedValue;
       }
       return acc;
     }, {});
+  };
+
+  const getSelectedAge = (): number | null => {
+    const selected = answers.q4;
+    if (typeof selected !== 'number') return null;
+    const q4 = SCREENS.find((screen) => screen.key === 'q4');
+    const option = (q4 as any)?.options?.[selected];
+    const parsedAge = Number.parseInt(String(option), 10);
+    if (!Number.isFinite(parsedAge)) return null;
+    return Math.min(120, Math.max(10, parsedAge));
+  };
+
+  const getSelectedSavingsGoal = (): string | null => {
+    const selected = answers['financial-goal'];
+    const goalScreen = SCREENS.find((screen) => screen.key === 'financial-goal');
+    const options = (goalScreen as any)?.options ?? [];
+    if (Array.isArray(selected)) {
+      const selectedGoals = selected
+        .map((index) => options?.[index])
+        .filter((goal): goal is string => typeof goal === 'string');
+      return selectedGoals.length > 0 ? selectedGoals.join(', ') : null;
+    }
+    if (typeof selected === 'number') {
+      const option = options?.[selected];
+      return typeof option === 'string' ? option : null;
+    }
+    return null;
   };
 
   const saveOnboarding = async (): Promise<boolean> => {
     if (onboardingSaving || onboardingSaved) return false;
     setOnboardingSaving(true);
     const weeklyBudgetValue = Number(weeklyBudget);
+    const sanitizedWeeklyBudget = Number.isFinite(weeklyBudgetValue)
+      ? Math.min(MAX_WEEKLY_BUDGET, Math.max(MIN_WEEKLY_BUDGET, weeklyBudgetValue))
+      : 120;
     const success = await saveOnboardingData({
       quiz_answers: buildQuizAnswers(),
       name: name.trim(),
-      weekly_budget: Number.isFinite(weeklyBudgetValue) ? weeklyBudgetValue : 120,
+      age: getSelectedAge(),
+      savings_goal: getSelectedSavingsGoal(),
+      weekly_budget: sanitizedWeeklyBudget,
       affirmation: affirmation.trim(),
-      notification_prefs: {
-        budget_reminders: budgetReminders,
-        cooking_ideas: cookingIdeas,
-      },
       selected_app_count: selectedAppCount,
       blocking_mode: 'moderate',
     });
     if (success) {
       setOnboardingSaved(true);
-      await AsyncStorage.removeItem(ONBOARDING_DRAFT_KEY);
+      const draftKey = await getOnboardingDraftKey();
+      await AsyncStorage.removeItem(draftKey);
     } else {
       console.warn('Failed to save onboarding data');
     }
@@ -658,19 +716,88 @@ export default function Onboarding({ onSkipToDashboard, onOnboardingComplete }: 
   useEffect(() => {
     if (current.type !== 'auth-sign-up' && current.type !== 'auth-sign-in') return;
     if (!authComplete || !didSignIn) return;
+
+    if (current.type === 'auth-sign-in') {
+      const continueSignIn = async () => {
+        if (!authUserId) {
+          setAuthError('Could not verify account. Please try again.');
+          setDidSignIn(false);
+          void supabase.auth.signOut();
+          return;
+        }
+        const { data: existingOnboarding, error: onboardingLookupError } = await supabase
+          .from('onboarding')
+          .select('user_id')
+          .eq('user_id', authUserId)
+          .maybeSingle();
+
+        if (onboardingLookupError) {
+          setAuthError('Could not verify account. Please try again.');
+          setDidSignIn(false);
+          void supabase.auth.signOut();
+          return;
+        }
+
+        if (!existingOnboarding) {
+          const { error: cleanupError } = await supabase.functions.invoke('cleanup-rejected-oauth-user', {
+            body: {},
+          });
+          if (cleanupError) {
+            console.warn('Failed to cleanup rejected OAuth user', cleanupError.message);
+          }
+          setAuthError(
+            authSignInOnlyFromWelcome
+              ? 'No account found for this Apple/Google login. Complete onboarding first to create a new account.'
+              : 'No account found for this Apple/Google login. Please sign up first.',
+          );
+          setDidSignIn(false);
+          void supabase.auth.signOut();
+          return;
+        }
+
+        onOnboardingComplete?.();
+      };
+      void continueSignIn();
+      return;
+    }
+
+    const continueAfterOAuthSignUp = async () => {
+      const paywallIndex = SCREENS.findIndex((screen) => screen.type === 'paywall');
+      if (paywallIndex !== -1) {
+        setStep(paywallIndex);
+      }
+    };
+
     if (onboardingSaved) {
-      onOnboardingComplete?.();
+      void continueAfterOAuthSignUp();
       return;
     }
     if (onboardingSaving) return;
     const completeOAuthOnboarding = async () => {
       const saved = await saveOnboarding();
       if (saved) {
-        onOnboardingComplete?.();
+        await continueAfterOAuthSignUp();
       }
     };
     void completeOAuthOnboarding();
-  }, [authComplete, didSignIn, current.type, onboardingSaved, onboardingSaving]);
+  }, [
+    authComplete,
+    authSignInOnlyFromWelcome,
+    authUserId,
+    didSignIn,
+    current.type,
+    onboardingSaved,
+    onboardingSaving,
+  ]);
+
+  useEffect(() => {
+    if (!authSignInOnlyFromWelcome) return;
+    if (current.type !== 'auth-sign-up' && current.type !== 'auth-email-sign-up') return;
+    const signInIndex = SCREENS.findIndex((screen) => screen.type === 'auth-sign-in');
+    if (signInIndex !== -1) {
+      setStep(signInIndex);
+    }
+  }, [authSignInOnlyFromWelcome, current.type]);
 
 
   useEffect(() => {
@@ -711,6 +838,61 @@ export default function Onboarding({ onSkipToDashboard, onOnboardingComplete }: 
       );
     }
 
+    if (current.type === 'auth-choice') {
+      return (
+        <View style={styles.authScreen}>
+          <View style={styles.authTopBar}>
+            <Pressable
+              onPress={() => {
+                if (step > 0) {
+                  setStep(step - 1);
+                }
+              }}
+              hitSlop={12}
+              style={styles.authTopBarBack}
+            >
+              <Text style={styles.authTopBarBackIcon}>‹</Text>
+            </Pressable>
+          </View>
+
+          <View style={styles.authHero}>
+            <Image source={require('./other_imgs/logo_transp_darkblue.png')} style={styles.authHeroMascot} />
+            <Text style={[styles.authHeroTitle, styles.authHeroTitleAccent]}>Let's get started</Text>
+            <Text style={styles.authHeroSubtitle}>Sign in to your account or create a new one.</Text>
+          </View>
+
+          <View style={styles.authBottomActions}>
+            <Pressable
+              style={styles.authCta}
+              onPress={() => {
+                setAuthSignInOnlyFromWelcome(false);
+                const targetIndex = SCREENS.findIndex((screen) => screen.type === 'auth-sign-in');
+                if (targetIndex !== -1) {
+                  setStep(targetIndex);
+                }
+              }}
+            >
+              <Text style={styles.authCtaText}>Log In</Text>
+            </Pressable>
+            {!authSignInOnlyFromWelcome ? (
+              <Pressable
+                style={styles.authCtaOutline}
+                onPress={() => {
+                  setAuthSignInOnlyFromWelcome(false);
+                  const targetIndex = SCREENS.findIndex((screen) => screen.type === 'auth-sign-up');
+                  if (targetIndex !== -1) {
+                    setStep(targetIndex);
+                  }
+                }}
+              >
+                <Text style={styles.authCtaOutlineText}>Create Account</Text>
+              </Pressable>
+            ) : null}
+          </View>
+        </View>
+      );
+    }
+
     if (
       current.type === 'auth-sign-up' ||
       current.type === 'auth-sign-in' ||
@@ -718,6 +900,7 @@ export default function Onboarding({ onSkipToDashboard, onOnboardingComplete }: 
       current.type === 'auth-email-sign-in'
     ) {
       const isProviderAuthScreen = current.type === 'auth-sign-up' || current.type === 'auth-sign-in';
+      const isEmailAuthScreen = current.type === 'auth-email-sign-up' || current.type === 'auth-email-sign-in';
       const isSignInScreen = current.type === 'auth-sign-in' || current.type === 'auth-email-sign-in';
 
       const handleEmailAuth = async () => {
@@ -798,57 +981,171 @@ export default function Onboarding({ onSkipToDashboard, onOnboardingComplete }: 
       };
 
       return (
-        <View style={styles.authWrap}>
-          <Image source={require('./other_imgs/mascot_transp.png')} style={styles.authMascotImage} />
-          <Text style={styles.authTitle}>{current.title}</Text>
-          <Text style={styles.authBody}>{current.body}</Text>
+        <View style={styles.authScreen}>
+          <View style={styles.authTopBar}>
+            <Pressable
+              onPress={() => {
+                const prevType = isEmailAuthScreen
+                  ? (isSignInScreen ? 'auth-sign-in' : 'auth-sign-up')
+                  : authSignInOnlyFromWelcome && isSignInScreen
+                    ? 'welcome'
+                    : 'auth-choice';
+                const targetIndex = SCREENS.findIndex((screen) => screen.type === prevType);
+                if (targetIndex !== -1) {
+                  setStep(targetIndex);
+                }
+              }}
+              hitSlop={12}
+              style={styles.authTopBarBack}
+            >
+              <Text style={styles.authTopBarBackIcon}>‹</Text>
+            </Pressable>
+          </View>
 
-          {authError ? <Text style={styles.authError}>{authError}</Text> : null}
+          {isProviderAuthScreen && !isSignInScreen ? (
+            <View style={[styles.authHero, styles.authHeroSignUp]}>
+              <Text style={[styles.authHeroTitle, styles.authHeroTitleAccent]}>Create your account</Text>
+              <Text style={styles.authHeroSubtitle}>Choose how you'd like to sign up.</Text>
+            </View>
+          ) : isProviderAuthScreen && isSignInScreen ? (
+            <View style={styles.authHero}>
+              <Text style={[styles.authHeroTitle, styles.authHeroTitleAccent]}>Welcome back</Text>
+              <Text style={styles.authHeroSubtitle}>Sign in to pick up where you left off.</Text>
+            </View>
+          ) : (
+            <View style={[styles.authHero, !isSignInScreen && styles.authHeroSignUp]}>
+              <Text style={[styles.authHeroTitle, !isSignInScreen && styles.authHeroTitleAccent]}>
+                {isSignInScreen ? 'Sign in with email' : 'Sign up with email'}
+              </Text>
+            </View>
+          )}
 
-          <View style={styles.authActions}>
+          {authError ? (
+            <View style={styles.authErrorCard}>
+              <Text style={styles.authErrorText}>{authError}</Text>
+            </View>
+          ) : null}
+
+          <View style={[styles.authFormArea, !isSignInScreen && styles.authFormAreaSignUp]}>
             {isProviderAuthScreen ? (
               <>
+                {isSignInScreen ? (
+                  <>
+                    <View style={styles.authCard}>
+                      <View style={styles.authFieldGroup}>
+                        <Text style={styles.authFieldLabel}>Email</Text>
+                        <TextInput
+                          value={authEmail}
+                          onChangeText={setAuthEmail}
+                          autoCapitalize="none"
+                          keyboardType="email-address"
+                          placeholder="you@example.com"
+                          placeholderTextColor={COLORS.muted}
+                          style={styles.authFieldInput}
+                        />
+                      </View>
+                      <View style={styles.authFieldGroup}>
+                        <Text style={styles.authFieldLabel}>Password</Text>
+                        <TextInput
+                          value={authPassword}
+                          onChangeText={setAuthPassword}
+                          secureTextEntry
+                          placeholder="••••••••"
+                          placeholderTextColor={COLORS.muted}
+                          style={styles.authFieldInput}
+                        />
+                      </View>
+                      <Pressable
+                        onPress={handleEmailAuth}
+                        disabled={authLoading}
+                        style={[styles.authCta, authLoading && styles.authDisabled]}
+                      >
+                        {authLoading ? (
+                          <ActivityIndicator color="#FFFFFF" />
+                        ) : (
+                          <Text style={styles.authCtaText}>Sign in</Text>
+                        )}
+                      </Pressable>
+                    </View>
+
+                    <View style={styles.authDivider}>
+                      <View style={styles.authDividerLine} />
+                      <Text style={styles.authDividerLabel}>or</Text>
+                      <View style={styles.authDividerLine} />
+                    </View>
+                  </>
+                ) : null}
+
                 <Pressable
                   onPress={handleGoogleAuth}
                   disabled={authLoading}
-                  style={[styles.authProviderButton, styles.authProviderButtonDark, authLoading && styles.authButtonDisabled]}
+                  style={[styles.authProviderBtn, authLoading && styles.authDisabled]}
                 >
-                  <Text style={[styles.authProviderIcon, styles.authGoogleIcon]}>G</Text>
-                  <Text style={[styles.authProviderText, styles.authProviderTextLight]}>Continue with Google</Text>
+                  <Text style={styles.authProviderBtnIconGoogle}>G</Text>
+                  <Text style={styles.authProviderBtnLabel}>Continue with Google</Text>
                 </Pressable>
 
                 {Platform.OS === 'ios' ? (
                   <Pressable
                     onPress={handleAppleAuth}
                     disabled={authLoading}
-                    style={[styles.authProviderButton, styles.authProviderButtonDark, authLoading && styles.authButtonDisabled]}
+                    style={[styles.authProviderBtn, styles.authProviderBtnDark, authLoading && styles.authDisabled]}
                   >
-                    <Text style={[styles.authProviderIcon, styles.authProviderIconLight]}></Text>
-                    <Text style={[styles.authProviderText, styles.authProviderTextLight]}>Continue with Apple</Text>
+                    <Text style={styles.authProviderBtnIconApple}></Text>
+                    <Text style={styles.authProviderBtnLabelLight}>Continue with Apple</Text>
                   </Pressable>
                 ) : null}
 
-                <Pressable
-                  onPress={() => {
-                    setAuthError(null);
-                    const targetType = isSignInScreen ? 'auth-email-sign-in' : 'auth-email-sign-up';
-                    const targetIndex = SCREENS.findIndex((screen) => screen.type === targetType);
-                    if (targetIndex !== -1) {
-                      setStep(targetIndex);
-                    }
-                  }}
-                  disabled={authLoading}
-                  style={[styles.authProviderButton, styles.authProviderButtonDark, authLoading && styles.authButtonDisabled]}
-                >
-                  <Text style={[styles.authProviderIcon, styles.authProviderIconLight]}>@</Text>
-                  <Text style={[styles.authProviderText, styles.authProviderTextLight]}>Continue with Email</Text>
-                </Pressable>
+                {!isSignInScreen ? (
+                  <>
+                    <Pressable
+                      onPress={() => {
+                        setAuthError(null);
+                        const targetIndex = SCREENS.findIndex((screen) => screen.type === 'auth-email-sign-up');
+                        if (targetIndex !== -1) {
+                          setStep(targetIndex);
+                        }
+                      }}
+                      disabled={authLoading}
+                      style={[styles.authProviderBtn, authLoading && styles.authDisabled]}
+                    >
+                      <Text style={styles.authProviderBtnIconEmail}>✉</Text>
+                      <Text style={styles.authProviderBtnLabel}>Continue with Email</Text>
+                    </Pressable>
+
+                    <Pressable
+                      onPress={() => {
+                        const targetIndex = SCREENS.findIndex((screen) => screen.type === 'auth-sign-in');
+                        if (targetIndex !== -1) {
+                          setStep(targetIndex);
+                        }
+                      }}
+                      style={[styles.authSwitchLink, styles.authSwitchLinkTight]}
+                    >
+                      <Text style={styles.authSwitchLinkText}>Already have an account? Sign in</Text>
+                    </Pressable>
+                  </>
+                ) : null}
+
+                {isSignInScreen && !authSignInOnlyFromWelcome ? (
+                  <Pressable
+                    onPress={() => {
+                      const targetIndex = SCREENS.findIndex((screen) => screen.type === 'auth-sign-up');
+                      if (targetIndex !== -1) {
+                        setStep(targetIndex);
+                      }
+                    }}
+                    style={[styles.authSwitchLink, styles.authSwitchLinkTight]}
+                  >
+                    <Text style={styles.authSwitchLinkText}>Don't have an account? Sign up</Text>
+                  </Pressable>
+                ) : null}
               </>
             ) : (
               <>
-                <View style={styles.authEmailCard}>
+                <View style={styles.authCard}>
                   <View style={styles.authFieldGroup}>
-                    <Text style={styles.authLabel}>Email</Text>
+                    <Text style={styles.authFieldLabel}>Email</Text>
                     <TextInput
                       value={authEmail}
                       onChangeText={setAuthEmail}
@@ -856,29 +1153,29 @@ export default function Onboarding({ onSkipToDashboard, onOnboardingComplete }: 
                       keyboardType="email-address"
                       placeholder="you@example.com"
                       placeholderTextColor={COLORS.muted}
-                      style={styles.authInput}
+                      style={styles.authFieldInput}
                     />
                   </View>
                   <View style={styles.authFieldGroup}>
-                    <Text style={styles.authLabel}>Password</Text>
+                    <Text style={styles.authFieldLabel}>Password</Text>
                     <TextInput
                       value={authPassword}
                       onChangeText={setAuthPassword}
                       secureTextEntry
                       placeholder="••••••••"
                       placeholderTextColor={COLORS.muted}
-                      style={styles.authInput}
+                      style={styles.authFieldInput}
                     />
                   </View>
                   <Pressable
                     onPress={handleEmailAuth}
                     disabled={authLoading}
-                    style={[styles.authPrimaryButton, authLoading && styles.authButtonDisabled]}
+                    style={[styles.authCta, authLoading && styles.authDisabled]}
                   >
                     {authLoading ? (
                       <ActivityIndicator color="#FFFFFF" />
                     ) : (
-                      <Text style={styles.authPrimaryButtonText}>
+                      <Text style={styles.authCtaText}>
                         {isSignInScreen ? 'Sign in' : 'Create account'}
                       </Text>
                     )}
@@ -887,61 +1184,46 @@ export default function Onboarding({ onSkipToDashboard, onOnboardingComplete }: 
 
                 <Pressable
                   onPress={() => {
-                    setAuthError(null);
                     const targetType = isSignInScreen ? 'auth-sign-in' : 'auth-sign-up';
                     const targetIndex = SCREENS.findIndex((screen) => screen.type === targetType);
                     if (targetIndex !== -1) {
                       setStep(targetIndex);
                     }
                   }}
-                  style={styles.authLinkButton}
+                  style={styles.authSwitchLink}
                 >
-                  <Text style={styles.authLinkText}>Use Google or Apple instead</Text>
+                  <Text style={styles.authSwitchLinkText}>Use Google or Apple instead</Text>
                 </Pressable>
               </>
             )}
-
-            {isProviderAuthScreen ? (
-              <Pressable
-                onPress={() => {
-                  const targetType = isSignInScreen ? 'auth-sign-up' : 'auth-sign-in';
-                  const targetIndex = SCREENS.findIndex((screen) => screen.type === targetType);
-                  if (targetIndex !== -1) {
-                    setStep(targetIndex);
-                  }
-                }}
-                style={styles.authLinkButton}
-              >
-                <Text style={styles.authLinkText}>
-                  {isSignInScreen
-                    ? 'Need an account? Sign up'
-                    : 'Already have an account? Sign in'}
-                </Text>
-              </Pressable>
-            ) : null}
-
-            <Pressable
-              onPress={() => {
-                const welcomeIndex = SCREENS.findIndex((screen) => screen.type === 'welcome');
-                if (welcomeIndex !== -1) {
-                  setStep(welcomeIndex);
-                }
-              }}
-              style={styles.authBackToWelcomeButton}
-            >
-              <Text style={styles.authBackToWelcomeText}>Back to welcome screen</Text>
-            </Pressable>
           </View>
 
-          {!isSignInScreen ? (
-            <View style={styles.authTermsFooter}>
-              <Text style={styles.authTermsText}>
+          <View style={styles.authFooter}>
+            {!isSignInScreen ? (
+              <Text style={styles.authTerms}>
                 By continuing you confirm that you have read and agreed to our{' '}
-                <Text style={styles.authTermsLink}>Terms of Service</Text> and consent to our{' '}
-                <Text style={styles.authTermsLink}>Privacy Policy</Text>.
+                <Text
+                  style={styles.authTermsHighlight}
+                  accessibilityRole="link"
+                  onPress={() => {
+                    void Linking.openURL(TERMS_URL);
+                  }}
+                >
+                  Terms of Service
+                </Text>{' '}
+                and consent to our{' '}
+                <Text
+                  style={styles.authTermsHighlight}
+                  accessibilityRole="link"
+                  onPress={() => {
+                    void Linking.openURL(PRIVACY_URL);
+                  }}
+                >
+                  Privacy Policy
+                </Text>.
               </Text>
-            </View>
-          ) : null}
+            ) : null}
+          </View>
         </View>
       );
     }
@@ -1004,36 +1286,49 @@ export default function Onboarding({ onSkipToDashboard, onOnboardingComplete }: 
     }
 
     if (current.type === 'rating') {
+      const reviews = [
+        {
+          name: 'Chloe Chen',
+          username: '@chloe_ch1',
+          review:
+            'I used to spend $40 on food deliveries everyday like it was nothing. Having the app block uber eats when i\'m over budget is a little annoying, but i actually have money in my savings now.',
+          avatar: require('./other_imgs/chloe.jpg'),
+        },
+        {
+          name: 'Silas Kovac',
+          username: '@silaskovac_dev',
+          review:
+            'seeing the app tell me my weekly orders cost me a new TV was the wake up call i needed. the app definitely stops the impulse buys.',
+          avatar: require('./other_imgs/silas.jpg'),
+        },
+        {
+          name: 'hannah',
+          username: '@hannahv2',
+          review:
+            'Love QuitBite ! the app actually stops me from ordering unhealthy and save money. the ai health coach is also very helpul.',
+          avatar: require('./other_imgs/hannah.jpg'),
+        },
+      ];
       return (
         <View style={styles.ratingWrap}>
-          <Text style={styles.ratingStars}>★★★★★</Text>
           <Text style={styles.ratingTitle}>{current.title}</Text>
           <Text style={styles.ratingBody}>{current.body}</Text>
-          <View style={styles.ratingBadgeRow}>
-            <View style={styles.ratingAvatarGroup}>
-              <View style={styles.ratingAvatar} />
-              <View style={[styles.ratingAvatar, styles.ratingAvatarOverlap]} />
-              <View style={[styles.ratingAvatar, styles.ratingAvatarOverlap]} />
-            </View>
-            <Text style={styles.ratingSocial}>100,000+ people</Text>
-          </View>
-          <View style={styles.ratingCard}>
-            <View style={styles.ratingCardHeader}>
-              <Text style={styles.ratingCardStars}>★★★★★</Text>
-              <Text style={styles.ratingCardName}>Sarah Jen.</Text>
-            </View>
-            <Text style={styles.ratingCardText}>
-              "This app felt like a reset button. I finally understand where my money was going."
-            </Text>
-          </View>
-          <View style={styles.ratingCard}>
-            <View style={styles.ratingCardHeader}>
-              <Text style={styles.ratingCardStars}>★★★★★</Text>
-              <Text style={styles.ratingCardName}>Jessica Lee</Text>
-            </View>
-            <Text style={styles.ratingCardText}>
-              "The budget nudges make me pause before ordering. I save weekly now."
-            </Text>
+          <View style={styles.ratingReviewList}>
+            {reviews.map((review) => (
+              <View key={review.username} style={styles.ratingReviewCard}>
+                <View style={styles.ratingReviewHeader}>
+                  <View style={styles.ratingReviewUserBlock}>
+                    <Image source={review.avatar} style={styles.ratingReviewAvatar} />
+                    <View>
+                      <Text style={styles.ratingReviewName}>{review.name}</Text>
+                      <Text style={styles.ratingReviewUsername}>{review.username}</Text>
+                    </View>
+                  </View>
+                  <Text style={styles.ratingReviewStars}>★★★★★</Text>
+                </View>
+                <Text style={styles.ratingReviewText}>{review.review}</Text>
+              </View>
+            ))}
           </View>
         </View>
       );
@@ -1041,9 +1336,9 @@ export default function Onboarding({ onSkipToDashboard, onOnboardingComplete }: 
 
     if (current.type === 'commitment') {
       const items = [
-        'Be willing and open to learn',
+        'Be willing and open to change',
         'Try to become the best version of myself',
-        'Be open to change',
+        'Save money whenever I can',
         'Care about my personal wellbeing',
       ];
       return (
@@ -1061,11 +1356,12 @@ export default function Onboarding({ onSkipToDashboard, onOnboardingComplete }: 
             ))}
           </View>
           <View style={styles.affirmationCard}>
-            <Text style={styles.affirmationLabel}>Type your affirmation</Text>
+            <Text style={styles.affirmationLabel}>Type this affirmation:</Text>
+            <Text style={styles.affirmationPrompt}>“{REQUIRED_AFFIRMATION}”</Text>
             <TextInput
               value={affirmation}
               onChangeText={setAffirmation}
-              placeholder="I commit to taking control of my habits"
+              placeholder={REQUIRED_AFFIRMATION}
               placeholderTextColor="rgba(255,255,255,0.3)"
               style={styles.affirmationInput}
               multiline
@@ -1085,6 +1381,18 @@ export default function Onboarding({ onSkipToDashboard, onOnboardingComplete }: 
     }
 
     if (current.type === 'placeholder') {
+      if (current.key === 'placeholder-1') {
+        return (
+          <View style={styles.featureWrap}>
+            <Text style={[styles.featureTitle, styles.featureTitleAccent]}>Small Cuts. Big Savings.</Text>
+            <Text style={styles.featureBody}>
+              QuitBite helps you reduce unhealthy food deliveries and save thousands a year.
+            </Text>
+            <Image source={require('./other_imgs/graph1.png')} style={styles.placeholderGraphImage} />
+          </View>
+        );
+      }
+
       return (
         <View style={styles.placeholderWrap}>
           <Text style={styles.placeholderText}>Coming soon</Text>
@@ -1149,25 +1457,38 @@ export default function Onboarding({ onSkipToDashboard, onOnboardingComplete }: 
             <Text style={styles.budgetCurrency}>$</Text>
             <TextInput
               value={weeklyBudget}
-              onChangeText={setWeeklyBudget}
+              onChangeText={(value) => {
+                const digitsOnly = value.replace(/[^0-9]/g, '');
+                if (!digitsOnly) {
+                  setWeeklyBudget('');
+                  return;
+                }
+                const numericValue = Number.parseInt(digitsOnly, 10);
+                const cappedValue = Math.min(MAX_WEEKLY_BUDGET, numericValue);
+                setWeeklyBudget(String(cappedValue));
+              }}
               keyboardType="number-pad"
+              maxLength={4}
               style={styles.budgetInput}
             />
           </View>
-          <Text style={styles.formHint}>Most people start between $75–$150.</Text>
+          <Text style={styles.formHint}>Pick a weekly cap between ${MIN_WEEKLY_BUDGET} and ${MAX_WEEKLY_BUDGET}.</Text>
         </View>
       );
     }
 
     if (current.type === 'help') {
-      const helpEmoji = current.key === 'help-1' ? '💸' : current.key === 'help-2' ? '🧑‍🍳' : '🎯';
+      const helpMascot =
+        current.key === 'help-2'
+          ? require('./mascots/pijjjaaa.png')
+          : current.key === 'help-3'
+            ? require('./mascots/superman.png')
+            : require('./mascots/bike.png');
       return (
-        <View style={styles.helpWrap}>
-          <View style={styles.illustrationLight}>
-            <Text style={styles.illustrationEmoji}>{helpEmoji}</Text>
-          </View>
-          <Text style={styles.helpTitle}>{current.title}</Text>
-          <Text style={styles.helpBody}>{current.body}</Text>
+        <View style={styles.featureWrap}>
+          <Image source={helpMascot} style={styles.featureMascotImage} />
+          <Text style={[styles.featureTitle, styles.featureTitleAccent]}>{current.title}</Text>
+          <Text style={styles.featureBody}>{current.body}</Text>
         </View>
       );
     }
@@ -1175,7 +1496,7 @@ export default function Onboarding({ onSkipToDashboard, onOnboardingComplete }: 
     if (current.type === 'permission') {
       return (
         <View style={styles.permissionWrap}>
-          <Text style={styles.formTitle}>{current.title}</Text>
+          <Text style={[styles.formTitle, styles.formTitleAccent]}>{current.title}</Text>
           <Text style={styles.formHint}>{current.body}</Text>
           <View style={styles.permissionCard}>
             <Text style={styles.permissionTitle}>Enable Screen Time access</Text>
@@ -1189,32 +1510,6 @@ export default function Onboarding({ onSkipToDashboard, onOnboardingComplete }: 
         </View>
       );
     }
-
-    if (current.type === 'notifications') {
-      return (
-        <View style={styles.permissionWrap}>
-          <Text style={styles.formTitle}>{current.title}</Text>
-          <Text style={styles.formHint}>{current.body}</Text>
-          <View style={styles.notificationCard}>
-            <View style={styles.notificationRow}>
-              <Text style={styles.notificationText}>Daily budget reminders</Text>
-              <Switch
-                value={budgetReminders}
-                onValueChange={(value) => handleNotificationToggle('budget', value)}
-              />
-            </View>
-            <View style={styles.notificationRow}>
-              <Text style={styles.notificationText}>Cooking ideas before meals</Text>
-              <Switch
-                value={cookingIdeas}
-                onValueChange={(value) => handleNotificationToggle('cooking', value)}
-              />
-            </View>
-          </View>
-        </View>
-      );
-    }
-
 
     if (current.type === 'consequence') {
       const consequenceMascot =
@@ -1251,7 +1546,7 @@ export default function Onboarding({ onSkipToDashboard, onOnboardingComplete }: 
       };
       return (
         <View style={styles.permissionWrap}>
-          <Text style={styles.formTitle}>{current.title}</Text>
+          <Text style={[styles.formTitle, styles.formTitleAccent]}>{current.title}</Text>
           <Text style={styles.formHint}>{current.body}</Text>
           <View style={styles.permissionCard}>
             <Text style={styles.permissionTitle}>
@@ -1294,22 +1589,19 @@ export default function Onboarding({ onSkipToDashboard, onOnboardingComplete }: 
               </View>
             ))}
           </View>
-          <Text style={styles.preparingResultsText}>Preparing your results...</Text>
         </View>
       );
     }
 
     if (current.type === 'showcase') {
       const showcaseImg = current.showcaseImage === 'block'
-        ? require('./mascots/fatty.png')
-        : require('./mascots/scale.png');
+        ? require('./mascots/hottea.png')
+        : require('./mascots/jollyahh.png');
       return (
-        <View style={styles.showcaseWrap}>
-          <View style={styles.showcaseImageWrap}>
-            <Image source={showcaseImg} style={styles.showcaseImage} />
-          </View>
-          <Text style={styles.showcaseTitle}>{current.title}</Text>
-          <Text style={styles.showcaseBody}>{current.body}</Text>
+        <View style={styles.featureWrap}>
+          <Image source={showcaseImg} style={styles.featureMascotImage} />
+          <Text style={[styles.featureTitle, styles.featureTitleAccent]}>{current.title}</Text>
+          <Text style={styles.featureBody}>{current.body}</Text>
         </View>
       );
     }
@@ -1399,24 +1691,49 @@ export default function Onboarding({ onSkipToDashboard, onOnboardingComplete }: 
 
     if (current.type === 'choice') {
       const selected = answers[current.key];
+      const isMultiSelect = Boolean((current as any).multiSelect);
+      const selectedIndexes = Array.isArray(selected)
+        ? selected
+        : typeof selected === 'number'
+          ? [selected]
+          : [];
       const options = current.options ?? [];
       return (
         <View style={styles.questionWrap}>
           <Text style={styles.questionLabel}>{current.label}</Text>
           <Text style={styles.questionTitle}>{current.question}</Text>
+          {isMultiSelect ? <Text style={styles.questionHint}>Select all that apply</Text> : null}
           <View style={styles.optionList}>
             {options.map((option, index) => (
               <Pressable
                 key={option}
-                onPress={() => setAnswers((prev) => ({ ...prev, [current.key]: index }))}
-                style={[styles.optionRow, selected === index && styles.optionRowActive]}
+                onPress={() => {
+                  if (isMultiSelect) {
+                    setAnswers((prev) => {
+                      const currentValue = prev[current.key];
+                      const currentSelections = Array.isArray(currentValue)
+                        ? currentValue
+                        : typeof currentValue === 'number'
+                          ? [currentValue]
+                          : [];
+                      const alreadySelected = currentSelections.includes(index);
+                      const nextSelections = alreadySelected
+                        ? currentSelections.filter((item) => item !== index)
+                        : [...currentSelections, index];
+                      return { ...prev, [current.key]: nextSelections };
+                    });
+                    return;
+                  }
+                  setAnswers((prev) => ({ ...prev, [current.key]: index }));
+                }}
+                style={[styles.optionRow, selectedIndexes.includes(index) && styles.optionRowActive]}
               >
-                <View style={[styles.optionIndex, selected === index && styles.optionIndexActive]}>
-                  <Text style={[styles.optionIndexText, selected === index && styles.optionIndexTextActive]}>
+                <View style={[styles.optionIndex, selectedIndexes.includes(index) && styles.optionIndexActive]}>
+                  <Text style={[styles.optionIndexText, selectedIndexes.includes(index) && styles.optionIndexTextActive]}>
                     {index + 1}
                   </Text>
                 </View>
-                <Text style={[styles.optionText, selected === index && styles.optionTextActive]}>
+                <Text style={[styles.optionText, selectedIndexes.includes(index) && styles.optionTextActive]}>
                   {option}
                 </Text>
               </Pressable>
@@ -1432,7 +1749,8 @@ export default function Onboarding({ onSkipToDashboard, onOnboardingComplete }: 
     }
 
     if (current.type === 'wheel') {
-      const selected = answers[current.key] ?? 0;
+      const selectedValue = answers[current.key];
+      const selected = typeof selectedValue === 'number' ? selectedValue : 0;
       const options = current.options ?? [];
       const suffix = current.suffix ?? '';
       return (
@@ -1479,11 +1797,16 @@ export default function Onboarding({ onSkipToDashboard, onOnboardingComplete }: 
     current.type === 'paywall';
   const backgroundColor = useMemo(() => {
     if (isDarkScreen) return COLORS.navy;
-    if (current.type === 'fact' || current.type === 'fact-progress') return '#FFFFFF';
-    if (current.type === 'ack' || current.type === 'consequence' || current.type === 'consequences-combined') return '#FFFFFF';
-    if (current.type === 'choice' || current.type === 'wheel') return '#FFFFFF';
-    if (current.type === 'showcase') return '#FFFFFF';
-    return COLORS.cream;
+    if (
+      current.type === 'auth-choice' ||
+      current.type === 'auth-sign-up' ||
+      current.type === 'auth-sign-in' ||
+      current.type === 'auth-email-sign-up' ||
+      current.type === 'auth-email-sign-in'
+    ) {
+      return COLORS.white;
+    }
+    return COLORS.screenBg;
   }, [current.type, current.key, isDarkScreen]);
 
   const primaryLabel =
@@ -1507,8 +1830,6 @@ export default function Onboarding({ onSkipToDashboard, onOnboardingComplete }: 
                       ? 'Continue'
                       : current.type === 'permission'
                         ? 'Continue'
-                        : current.type === 'notifications'
-                          ? 'Continue'
                           : current.type === 'select-apps'
                             ? 'Continue'
                             : current.type === 'access'
@@ -1520,26 +1841,33 @@ export default function Onboarding({ onSkipToDashboard, onOnboardingComplete }: 
                                 : 'Next';
   const isPaywall = current.type === 'paywall';
   const isAuthScreen =
+    current.type === 'auth-choice' ||
     current.type === 'auth-sign-up' ||
     current.type === 'auth-sign-in' ||
     current.type === 'auth-email-sign-up' ||
     current.type === 'auth-email-sign-in';
+  const isEmailAuthScreen = current.type === 'auth-email-sign-up' || current.type === 'auth-email-sign-in';
   const progressDotIndex = Math.min(2, Math.floor((step / Math.max(1, totalSteps - 1)) * 3));
+  const normalizedAffirmationLength = affirmation.trim().length;
+  const affirmationLengthDelta = Math.abs(normalizedAffirmationLength - REQUIRED_AFFIRMATION.length);
+  const isAffirmationLengthValid = normalizedAffirmationLength > 0 && affirmationLengthDelta <= 10;
   const isNextDisabled =
     current.type === 'choice'
-      ? answers[current.key] === undefined
+      ? Boolean((current as any).multiSelect)
+        ? !Array.isArray(answers[current.key]) || (answers[current.key] as number[]).length === 0
+        : typeof answers[current.key] !== 'number'
       : current.type === 'wheel'
         ? answers[current.key] === undefined
         : current.type === 'name'
           ? name.trim().length === 0
           : current.type === 'budget'
-            ? weeklyBudget.trim().length === 0
+            ? !isWeeklyBudgetValid
             : current.type === 'commitment'
-              ? affirmation.trim().length < 10
+              ? !isAffirmationLengthValid
               : isAuthScreen
                 ? !authComplete
                 : current.type === 'paywall'
-                  ? selectedPlan === null || isPurchasing || isLoadingOfferings
+                  ? selectedPlan === null || isPurchasing || isRestoringPurchase || isLoadingOfferings
               : false;
 
   const handlePurchase = async () => {
@@ -1575,6 +1903,27 @@ export default function Onboarding({ onSkipToDashboard, onOnboardingComplete }: 
     }
   };
 
+  const handleRestorePurchases = async () => {
+    setIsRestoringPurchase(true);
+    setOfferingsError(null);
+    try {
+      const info = await Purchases.restorePurchases();
+      setCustomerInfo(info);
+      await syncSubscription(info);
+      const hasProEntitlement = Boolean((info as any)?.entitlements?.active?.[PRO_ENTITLEMENT_ID]);
+      if (hasProEntitlement) {
+        Alert.alert('Purchases restored', 'Your subscription has been restored successfully.');
+        onOnboardingComplete?.();
+        return;
+      }
+      Alert.alert('No purchases found', 'No active purchases were found to restore for this Apple ID.');
+    } catch (e: any) {
+      Alert.alert('Restore failed', e?.message ?? 'Unable to restore purchases right now. Please try again.');
+    } finally {
+      setIsRestoringPurchase(false);
+    }
+  };
+
   if (current.type === 'welcome') {
     return (
       <View style={styles.safeArea}>
@@ -1589,26 +1938,22 @@ export default function Onboarding({ onSkipToDashboard, onOnboardingComplete }: 
           </ScrollView>
           <View style={styles.welcomeBottomBar}>
             <Pressable onPress={() => {
+              setAuthSignInOnlyFromWelcome(true);
               const authIndex = SCREENS.findIndex((s) => s.type === 'auth-sign-in');
               if (authIndex !== -1) setStep(authIndex);
             }}>
               <Text style={styles.welcomeSignInHint}>Existing user? Sign in</Text>
             </Pressable>
-            <View style={styles.progressDotsRow}>
-              {[0, 1, 2].map((dot) => (
-                <View key={`welcome-dot-${dot}`} style={[styles.progressDot, dot === progressDotIndex && styles.progressDotActive]} />
-              ))}
-            </View>
             <Pressable
-              onPress={handleNext}
+              onPress={() => {
+                setAuthSignInOnlyFromWelcome(false);
+                handleNext();
+              }}
               style={[styles.primaryButton, { width: '100%' }]}
             >
               <Text style={styles.primaryButtonText}>
                 {primaryLabel}
               </Text>
-            </Pressable>
-            <Pressable onPress={() => onSkipToDashboard?.()} style={styles.welcomeSkipButton}>
-              <Text style={styles.welcomeSkipText}>Skip onboarding</Text>
             </Pressable>
           </View>
         </ImageBackground>
@@ -1622,7 +1967,7 @@ export default function Onboarding({ onSkipToDashboard, onOnboardingComplete }: 
       { key: 'monthly' as const, title: 'Monthly', price: '$19.99', sub: '$4.99 / week', note: 'per month', badge: 'Most Popular' },
       { key: 'annual' as const, title: 'Yearly', price: '$99.99', sub: '$1.92 / week', note: 'per year', badge: 'Best Price' },
     ];
-    const overlayNextDisabled = selectedPlan === null || isPurchasing || isLoadingOfferings;
+    const overlayNextDisabled = selectedPlan === null || isPurchasing || isRestoringPurchase || isLoadingOfferings;
     return (
       <View style={styles.safeArea}>
         <StatusBar barStyle="light-content" translucent backgroundColor="transparent" />
@@ -1709,11 +2054,34 @@ export default function Onboarding({ onSkipToDashboard, onOnboardingComplete }: 
                   {isPurchasing ? 'Processing…' : 'Start 3 Days Free Trial'}
                 </Text>
               </Pressable>
+              <Pressable
+                onPress={handleRestorePurchases}
+                disabled={isPurchasing || isRestoringPurchase || isLoadingOfferings}
+                style={styles.overlayRestoreButton}
+              >
+                <Text style={styles.overlayRestoreButtonText}>
+                  {isRestoringPurchase ? 'Restoring…' : 'Restore Purchases'}
+                </Text>
+              </Pressable>
               <Text style={styles.overlayFootnote}>No payment now. Cancel anytime.</Text>
             </View>
           </ImageBackground>
         </Modal>
       </View>
+    );
+  }
+
+  if (isAuthScreen) {
+    return (
+      <SafeAreaView style={[styles.safeArea, { backgroundColor: COLORS.white }]}>
+        <StatusBar barStyle="dark-content" translucent backgroundColor="transparent" />
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          style={styles.container}
+        >
+          {renderContent()}
+        </KeyboardAvoidingView>
+      </SafeAreaView>
     );
   }
 
@@ -1733,7 +2101,10 @@ export default function Onboarding({ onSkipToDashboard, onOnboardingComplete }: 
           )}
         </View>
 
-        <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+        <ScrollView
+          contentContainerStyle={[styles.content, current.type === 'results' && styles.contentResults]}
+          showsVerticalScrollIndicator={false}
+        >
           {renderContent()}
         </ScrollView>
 
@@ -1775,14 +2146,14 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   topNav: {
-    paddingHorizontal: 12,
-    paddingTop: 4,
-    minHeight: 30,
+    paddingHorizontal: 16,
+    paddingTop: 6,
+    minHeight: 36,
   },
   welcomeTopNav: {
-    paddingHorizontal: 12,
+    paddingHorizontal: 16,
     paddingTop: 60,
-    minHeight: 30,
+    minHeight: 36,
   },
   welcomeBottomBar: {
     position: 'absolute',
@@ -1791,13 +2162,13 @@ const styles = StyleSheet.create({
     bottom: 0,
     paddingHorizontal: 24,
     paddingBottom: 44,
-    paddingTop: 10,
+    paddingTop: 14,
     backgroundColor: 'transparent',
     alignItems: 'center',
   },
   welcomeSignInHint: {
     fontSize: 14,
-    color: 'rgba(255,255,255,0.55)',
+    color: 'rgba(255,255,255,0.5)',
     marginBottom: 14,
     letterSpacing: 0.2,
   },
@@ -1806,13 +2177,13 @@ const styles = StyleSheet.create({
   },
   welcomeSkipText: {
     fontSize: 14,
-    color: 'rgba(255,255,255,0.75)',
+    color: 'rgba(255,255,255,0.7)',
     fontWeight: '600',
   },
   welcomeContent: {
     paddingHorizontal: 24,
     paddingTop: 70,
-    paddingBottom: 160,
+    paddingBottom: 180,
     flexGrow: 1,
   },
   quizProgressTrack: {
@@ -1828,21 +2199,24 @@ const styles = StyleSheet.create({
   quizProgressFill: {
     height: 4,
     borderRadius: 999,
-    backgroundColor: '#4A6CF7',
+    backgroundColor: COLORS.accent,
   },
   backButton: {
-    width: 32,
-    height: 32,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: 'rgba(0,0,0,0.04)',
     alignItems: 'center',
     justifyContent: 'center',
   },
   backPlaceholder: {
-    width: 32,
-    height: 32,
+    width: 36,
+    height: 36,
   },
   backIcon: {
-    fontSize: 26,
+    fontSize: 22,
     color: COLORS.ink,
+    fontWeight: '600',
   },
   backIconLight: {
     color: '#FFFFFF',
@@ -1852,10 +2226,14 @@ const styles = StyleSheet.create({
     paddingBottom: 140,
     flexGrow: 1,
   },
+  contentResults: {
+    paddingBottom: 220,
+  },
   splashWrap: {
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
+    backgroundColor: COLORS.navy,
   },
   logoMark: {
     width: 130,
@@ -1877,8 +2255,8 @@ const styles = StyleSheet.create({
   welcomeMascotArea: {
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 16,
-    marginBottom: 28,
+    paddingVertical: 20,
+    marginBottom: 32,
   },
   welcomeMascotImage: {
     width: 260,
@@ -1888,21 +2266,54 @@ const styles = StyleSheet.create({
   illustrationWarm: {
     height: 220,
     borderRadius: 32,
-    backgroundColor: COLORS.warmGray,
+    backgroundColor: COLORS.accentSoft,
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: 28,
   },
   illustrationLight: {
     height: 150,
-    borderRadius: 28,
-    backgroundColor: COLORS.warmGray,
+    borderRadius: 24,
+    backgroundColor: COLORS.accentSoft,
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: 28,
   },
   illustrationEmoji: {
     fontSize: 52,
+  },
+  featureWrap: {
+    alignItems: 'center',
+    flex: 1,
+    justifyContent: 'flex-start',
+    paddingTop: 28,
+    paddingHorizontal: 24,
+  },
+  featureMascotImage: {
+    width: 290,
+    height: 290,
+    resizeMode: 'contain',
+    marginBottom: 16,
+  },
+  featureTitle: {
+    fontSize: 24,
+    fontWeight: '800',
+    color: COLORS.ink,
+    textAlign: 'center',
+    marginBottom: 10,
+    letterSpacing: -0.4,
+    maxWidth: 320,
+  },
+  featureTitleAccent: {
+    color: COLORS.accent,
+  },
+  featureBody: {
+    fontSize: 15,
+    color: COLORS.muted,
+    textAlign: 'center',
+    lineHeight: 24,
+    fontFamily: Platform.OS === 'ios' ? 'Helvetica Neue' : 'sans-serif',
+    maxWidth: 320,
   },
   welcomeTitle: {
     fontSize: 38,
@@ -1914,7 +2325,7 @@ const styles = StyleSheet.create({
   welcomeBody: {
     fontSize: 17,
     lineHeight: 28,
-    color: 'rgba(255,255,255,0.65)',
+    color: 'rgba(255,255,255,0.6)',
     fontFamily: Platform.OS === 'ios' ? 'Helvetica Neue' : 'sans-serif',
   },
   welcomeHint: {
@@ -1929,7 +2340,7 @@ const styles = StyleSheet.create({
   },
   welcomeHintTop: {
     fontSize: 14,
-    color: 'rgba(255,255,255,0.55)',
+    color: 'rgba(255,255,255,0.5)',
     marginBottom: 18,
     letterSpacing: 0.2,
   },
@@ -1944,58 +2355,60 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
   nonQuizProgressTrackDark: {
-    backgroundColor: 'rgba(255,255,255,0.15)',
+    backgroundColor: 'rgba(255,255,255,0.12)',
   },
   nonQuizProgressFill: {
     height: 4,
     borderRadius: 999,
-    backgroundColor: '#4A6CF7',
+    backgroundColor: COLORS.accent,
   },
   nonQuizProgressFillDark: {
-    backgroundColor: '#7B9BFF',
+    backgroundColor: COLORS.accentLight,
   },
   factWrap: {
-    marginTop: 8,
     alignItems: 'center',
     flex: 1,
     justifyContent: 'flex-start',
+    paddingTop: 20,
   },
   factOneWrap: {
     paddingTop: 0,
   },
   factMascotImage: {
-    width: 390,
-    height: 470,
+    width: 280,
+    height: 300,
     resizeMode: 'contain',
-    marginBottom: 0,
+    marginBottom: 20,
   },
   factOneMascotImage: {
-    marginBottom: -8,
-    marginTop: -24,
+    marginBottom: 8,
+    marginTop: -10,
   },
   opportunityMascotImage: {
-    width: 330,
-    height: 390,
-    marginBottom: 0,
+    width: 260,
+    height: 280,
+    marginBottom: 16,
   },
   factLabel: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#5B6ABF',
-    marginBottom: 18,
-    letterSpacing: 0.2,
+    fontSize: 13,
+    fontWeight: '700',
+    color: COLORS.accent,
+    marginBottom: 14,
+    letterSpacing: 1,
+    textTransform: 'uppercase',
   },
   factOneLabel: {
     marginBottom: 12,
   },
   factBody: {
-    fontSize: 21,
-    lineHeight: 32,
+    fontSize: 20,
+    lineHeight: 30,
     color: COLORS.ink,
     textAlign: 'center',
-    fontWeight: '500',
+    fontWeight: '600',
     letterSpacing: -0.3,
     fontFamily: Platform.OS === 'ios' ? 'Helvetica Neue' : 'sans-serif',
+    maxWidth: 320,
   },
   factOneBody: {
     maxWidth: '94%',
@@ -2020,7 +2433,7 @@ const styles = StyleSheet.create({
   resultsBarFill: {
     height: 5,
     borderRadius: 999,
-    backgroundColor: '#4A6CF7',
+    backgroundColor: COLORS.accent,
   },
   resultsLabel: {
     fontSize: 12,
@@ -2028,68 +2441,77 @@ const styles = StyleSheet.create({
     color: COLORS.muted,
   },
   resultsWrap: {
-    marginTop: 6,
+    alignItems: 'center',
+    flex: 1,
+    justifyContent: 'flex-start',
+    paddingTop: 0,
   },
   resultsTitle: {
     fontSize: 28,
     fontWeight: '800',
     color: COLORS.ink,
-    marginBottom: 16,
+    marginBottom: 12,
     letterSpacing: -0.6,
+    textAlign: 'center',
+    maxWidth: 320,
   },
   resultsMascotArea: {
     alignItems: 'center',
     marginBottom: 4,
   },
   resultsMascotImage: {
-    width: 180,
-    height: 160,
+    width: 136,
+    height: 120,
     resizeMode: 'contain',
   },
   resultsSubtitle: {
-    marginTop: 6,
+    marginTop: 2,
     fontSize: 17,
-    fontWeight: '600',
+    fontWeight: '700',
     color: COLORS.ink,
     textAlign: 'center',
     letterSpacing: -0.3,
+    maxWidth: 320,
   },
   resultsBody: {
-    marginTop: 8,
+    marginTop: 6,
     fontSize: 15,
     color: COLORS.muted,
     textAlign: 'center',
-    lineHeight: 22,
+    lineHeight: 23,
+    maxWidth: 320,
   },
   resultsSection: {
-    marginTop: 24,
-    fontSize: 12,
+    marginTop: 14,
+    fontSize: 11,
     fontWeight: '700',
-    color: '#4A6CF7',
-    letterSpacing: 1.2,
+    color: COLORS.accent,
+    letterSpacing: 1.5,
     textTransform: 'uppercase',
+    textAlign: 'center',
   },
   resultsCard: {
-    marginTop: 14,
-    padding: 16,
-    borderRadius: 18,
-    borderWidth: 0,
-    borderColor: 'transparent',
-    backgroundColor: COLORS.white,
+    marginTop: 10,
+    padding: 14,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: COLORS.softBorder,
+    backgroundColor: COLORS.cardBg,
+    width: '100%',
     flexDirection: 'row',
     alignItems: 'center',
     gap: 14,
-    shadowColor: '#000',
+    shadowColor: '#4A7CFF',
     shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.04,
-    shadowRadius: 8,
+    shadowOpacity: 0.06,
+    shadowRadius: 12,
     elevation: 2,
   },
   resultsBadge: {
     width: 4,
     height: 36,
     borderRadius: 2,
-    backgroundColor: '#4A6CF7',
+    backgroundColor: COLORS.accent,
   },
   resultsBadgeWarm: {
     backgroundColor: COLORS.gold,
@@ -2100,21 +2522,20 @@ const styles = StyleSheet.create({
   resultsCardText: {
     flex: 1,
     fontSize: 14,
-    color: COLORS.ink,
+    color: COLORS.inkSoft,
     lineHeight: 21,
   },
   ackWrap: {
     flex: 1,
     alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 28,
-    paddingBottom: 120,
+    justifyContent: 'flex-start',
+    paddingTop: 24,
   },
   ackIconWrap: {
     width: 100,
     height: 100,
     borderRadius: 50,
-    backgroundColor: COLORS.warmGray,
+    backgroundColor: COLORS.accentSoft,
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: 28,
@@ -2123,33 +2544,35 @@ const styles = StyleSheet.create({
     fontSize: 38,
   },
   ackMascotImage: {
-    width: 220,
-    height: 220,
+    width: 200,
+    height: 200,
     resizeMode: 'contain',
     marginBottom: 28,
   },
   ackTitle: {
-    fontSize: 26,
+    fontSize: 24,
     fontWeight: '800',
-    color: '#4A6CF7',
+    color: COLORS.accent,
     textAlign: 'center',
     marginBottom: 10,
-    letterSpacing: 0.5,
+    letterSpacing: 0.3,
     textTransform: 'uppercase',
+    maxWidth: 320,
   },
   ackBody: {
     fontSize: 16,
     color: COLORS.muted,
     textAlign: 'center',
-    lineHeight: 26,
+    lineHeight: 24,
     fontFamily: Platform.OS === 'ios' ? 'Helvetica Neue' : 'sans-serif',
+    maxWidth: 320,
   },
   ratingWrap: {
-    marginTop: 16,
+    marginTop: 2,
     alignItems: 'center',
   },
   ratingStars: {
-    fontSize: 20,
+    fontSize: 22,
     color: COLORS.gold,
     marginBottom: 14,
     letterSpacing: 4,
@@ -2164,11 +2587,65 @@ const styles = StyleSheet.create({
   },
   ratingBody: {
     fontSize: 15,
-    color: 'rgba(255,255,255,0.65)',
+    color: 'rgba(255,255,255,0.6)',
     textAlign: 'center',
-    lineHeight: 24,
+    lineHeight: 22,
     maxWidth: 330,
-    marginBottom: 20,
+    marginBottom: 12,
+  },
+  ratingReviewList: {
+    width: '100%',
+    gap: 10,
+  },
+  ratingReviewCard: {
+    width: '100%',
+    borderRadius: 16,
+    backgroundColor: 'rgba(255,255,255,0.06)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.08)',
+    padding: 13,
+  },
+  ratingReviewHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 10,
+  },
+  ratingReviewUserBlock: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    flex: 1,
+    marginRight: 10,
+  },
+  ratingReviewAvatar: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.2)',
+    resizeMode: 'cover',
+  },
+  ratingReviewName: {
+    fontSize: 16,
+    color: '#FFFFFF',
+    fontWeight: '800',
+    letterSpacing: -0.2,
+  },
+  ratingReviewUsername: {
+    fontSize: 12,
+    color: 'rgba(255,255,255,0.5)',
+    marginTop: 2,
+  },
+  ratingReviewStars: {
+    fontSize: 14,
+    color: COLORS.gold,
+    letterSpacing: 1.2,
+  },
+  ratingReviewText: {
+    fontSize: 14,
+    color: 'rgba(255,255,255,0.88)',
+    lineHeight: 22,
   },
   ratingBadgeRow: {
     flexDirection: 'row',
@@ -2183,22 +2660,23 @@ const styles = StyleSheet.create({
     width: 28,
     height: 28,
     borderRadius: 14,
-    backgroundColor: 'rgba(232,115,74,0.3)',
+    backgroundColor: 'rgba(74,124,255,0.2)',
     borderWidth: 1.5,
-    borderColor: 'rgba(255,255,255,0.4)',
+    borderColor: 'rgba(255,255,255,0.35)',
   },
   ratingAvatarOverlap: {
     marginLeft: -10,
   },
   ratingSocial: {
     fontSize: 12,
-    color: 'rgba(255,255,255,0.6)',
+    color: 'rgba(255,255,255,0.55)',
     fontWeight: '500',
+    marginLeft: 8,
   },
   ratingCard: {
     width: '100%',
-    borderRadius: 20,
-    backgroundColor: 'rgba(255,255,255,0.08)',
+    borderRadius: 18,
+    backgroundColor: 'rgba(255,255,255,0.06)',
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.08)',
     padding: 16,
@@ -2217,12 +2695,12 @@ const styles = StyleSheet.create({
   },
   ratingCardName: {
     fontSize: 12,
-    color: 'rgba(255,255,255,0.7)',
+    color: 'rgba(255,255,255,0.65)',
     fontWeight: '600',
   },
   ratingCardText: {
     fontSize: 14,
-    color: 'rgba(255,255,255,0.65)',
+    color: 'rgba(255,255,255,0.6)',
     lineHeight: 20,
     fontStyle: 'italic',
   },
@@ -2238,7 +2716,7 @@ const styles = StyleSheet.create({
   },
   commitmentBody: {
     fontSize: 15,
-    color: 'rgba(255,255,255,0.6)',
+    color: 'rgba(255,255,255,0.55)',
     marginBottom: 20,
     fontFamily: Platform.OS === 'ios' ? 'Helvetica Neue' : 'sans-serif',
   },
@@ -2256,19 +2734,19 @@ const styles = StyleSheet.create({
     height: 24,
     borderRadius: 12,
     borderWidth: 1.5,
-    borderColor: '#4A6CF7',
-    backgroundColor: 'rgba(74,108,247,0.12)',
+    borderColor: COLORS.accent,
+    backgroundColor: 'rgba(74,124,255,0.15)',
     alignItems: 'center',
     justifyContent: 'center',
   },
   commitmentCheckText: {
-    color: '#4A6CF7',
+    color: COLORS.accent,
     fontSize: 12,
     fontWeight: '700',
   },
   commitmentText: {
     fontSize: 15,
-    color: 'rgba(255,255,255,0.8)',
+    color: 'rgba(255,255,255,0.75)',
     flex: 1,
     lineHeight: 22,
   },
@@ -2313,7 +2791,7 @@ const styles = StyleSheet.create({
   motivationHint: {
     marginTop: 20,
     fontSize: 12,
-    color: 'rgba(255,255,255,0.35)',
+    color: 'rgba(255,255,255,0.3)',
     letterSpacing: 0.5,
   },
   accessWrap: {
@@ -2334,7 +2812,7 @@ const styles = StyleSheet.create({
   },
   accessTile: {
     width: '47%',
-    borderRadius: 18,
+    borderRadius: 16,
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.08)',
     backgroundColor: 'rgba(255,255,255,0.06)',
@@ -2342,18 +2820,18 @@ const styles = StyleSheet.create({
   },
   accessTileIcon: {
     fontSize: 14,
-    color: '#4A6CF7',
+    color: COLORS.accentLight,
     marginBottom: 10,
   },
   accessTileText: {
     fontSize: 13,
-    color: 'rgba(255,255,255,0.75)',
+    color: 'rgba(255,255,255,0.7)',
     lineHeight: 18,
     fontWeight: '500',
   },
   accessTestimonial: {
-    borderRadius: 20,
-    backgroundColor: 'rgba(255,255,255,0.08)',
+    borderRadius: 18,
+    backgroundColor: 'rgba(255,255,255,0.06)',
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.06)',
     padding: 16,
@@ -2377,7 +2855,7 @@ const styles = StyleSheet.create({
   },
   accessTestimonialBody: {
     fontSize: 14,
-    color: 'rgba(255,255,255,0.65)',
+    color: 'rgba(255,255,255,0.6)',
     lineHeight: 20,
     fontStyle: 'italic',
   },
@@ -2399,13 +2877,13 @@ const styles = StyleSheet.create({
     marginTop: 20,
     fontSize: 11,
     letterSpacing: 2.5,
-    color: '#4A6CF7',
+    color: COLORS.accentLight,
     fontWeight: '700',
   },
   transformationDate: {
     marginTop: 8,
     fontSize: 15,
-    color: 'rgba(255,255,255,0.8)',
+    color: 'rgba(255,255,255,0.75)',
     fontWeight: '500',
   },
   transformationFootnote: {
@@ -2418,7 +2896,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 18,
   },
   transformationFootnoteText: {
-    color: 'rgba(255,255,255,0.6)',
+    color: 'rgba(255,255,255,0.55)',
     fontSize: 13,
     fontWeight: '500',
   },
@@ -2432,8 +2910,8 @@ const styles = StyleSheet.create({
     paddingTop: 16,
   },
   unlockButton: {
-    backgroundColor: '#4caef9',
-    borderRadius: 14,
+    backgroundColor: COLORS.accent,
+    borderRadius: 16,
     paddingVertical: 16,
     alignItems: 'center',
     width: '100%',
@@ -2446,7 +2924,7 @@ const styles = StyleSheet.create({
   },
   overlaySheet: {
     flex: 1,
-    backgroundColor: '#1A1A2E',
+    backgroundColor: COLORS.navy,
     paddingHorizontal: 20,
     paddingBottom: 48,
   },
@@ -2460,7 +2938,7 @@ const styles = StyleSheet.create({
     width: 36,
     height: 36,
     borderRadius: 18,
-    backgroundColor: 'rgba(255,255,255,0.12)',
+    backgroundColor: 'rgba(255,255,255,0.1)',
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -2475,15 +2953,16 @@ const styles = StyleSheet.create({
     right: 0,
     bottom: 0,
     paddingHorizontal: 20,
-    paddingBottom: 26,
+    paddingBottom: 20,
+    paddingTop: 14,
   },
   overlayTrialButton: {
-    backgroundColor: '#4caef9',
-    borderRadius: 14,
+    backgroundColor: COLORS.accent,
+    borderRadius: 16,
     paddingVertical: 16,
     alignItems: 'center',
     width: '100%',
-    marginTop: 12,
+    marginTop: 8,
   },
   overlayTrialButtonText: {
     color: '#FFFFFF',
@@ -2491,17 +2970,28 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     letterSpacing: 0.2,
   },
+  overlayRestoreButton: {
+    marginTop: 6,
+    alignItems: 'center',
+    paddingVertical: 6,
+  },
+  overlayRestoreButtonText: {
+    color: 'rgba(255,255,255,0.75)',
+    fontSize: 14,
+    fontWeight: '600',
+    textDecorationLine: 'underline',
+  },
   overlayFootnote: {
-    color: 'rgba(255,255,255,0.55)',
+    color: 'rgba(255,255,255,0.5)',
     fontSize: 13,
     textAlign: 'center',
-    marginTop: 10,
+    marginTop: 6,
   },
   planBadgeWrap: {
     alignSelf: 'flex-start',
-    backgroundColor: '#4caef9',
-    borderTopLeftRadius: 8,
-    borderTopRightRadius: 8,
+    backgroundColor: COLORS.accent,
+    borderTopLeftRadius: 10,
+    borderTopRightRadius: 10,
     paddingHorizontal: 10,
     paddingVertical: 3,
     marginLeft: 12,
@@ -2513,11 +3003,11 @@ const styles = StyleSheet.create({
     letterSpacing: 0.3,
   },
   bestPriceBadgeWrap: {
-    backgroundColor: '#FFD76A',
+    backgroundColor: COLORS.gold,
     borderTopLeftRadius: 10,
     borderTopRightRadius: 10,
-    shadowColor: '#FFD76A',
-    shadowOpacity: 0.35,
+    shadowColor: COLORS.gold,
+    shadowOpacity: 0.3,
     shadowRadius: 8,
     shadowOffset: { width: 0, height: 2 },
     elevation: 3,
@@ -2543,12 +3033,12 @@ const styles = StyleSheet.create({
   paywallSubtitle: {
     marginTop: 8,
     fontSize: 13,
-    color: '#4A6CF7',
+    color: COLORS.accentLight,
     fontWeight: '600',
     letterSpacing: 0.3,
   },
   paywallBenefits: {
-    borderRadius: 20,
+    borderRadius: 18,
     backgroundColor: 'rgba(255,255,255,0.06)',
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.06)',
@@ -2563,7 +3053,7 @@ const styles = StyleSheet.create({
   },
   paywallBenefitBody: {
     fontSize: 14,
-    color: 'rgba(255,255,255,0.6)',
+    color: 'rgba(255,255,255,0.55)',
     lineHeight: 20,
   },
   paywallError: {
@@ -2576,15 +3066,15 @@ const styles = StyleSheet.create({
     marginBottom: 10,
   },
   paywallPlanCard: {
-    borderRadius: 20,
+    borderRadius: 18,
     borderWidth: 1.5,
     borderColor: 'rgba(255,255,255,0.1)',
     backgroundColor: 'rgba(255,255,255,0.04)',
     padding: 16,
   },
   paywallPlanCardActive: {
-    borderColor: '#4caef9',
-    backgroundColor: 'rgba(76,174,249,0.12)',
+    borderColor: COLORS.accent,
+    backgroundColor: 'rgba(74,124,255,0.12)',
   },
   paywallPlanRow: {
     flexDirection: 'row',
@@ -2596,7 +3086,7 @@ const styles = StyleSheet.create({
     height: 20,
     borderRadius: 10,
     borderWidth: 1.5,
-    borderColor: 'rgba(255,255,255,0.5)',
+    borderColor: 'rgba(255,255,255,0.4)',
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -2604,7 +3094,7 @@ const styles = StyleSheet.create({
     width: 10,
     height: 10,
     borderRadius: 5,
-    backgroundColor: '#4caef9',
+    backgroundColor: COLORS.accent,
   },
   paywallPlanCopy: {
     flex: 1,
@@ -2617,7 +3107,7 @@ const styles = StyleSheet.create({
   paywallPlanSub: {
     marginTop: 3,
     fontSize: 12,
-    color: 'rgba(255,255,255,0.5)',
+    color: 'rgba(255,255,255,0.45)',
   },
   paywallPlanPriceBlock: {
     alignItems: 'flex-end',
@@ -2630,7 +3120,7 @@ const styles = StyleSheet.create({
   paywallPlanNote: {
     marginTop: 3,
     fontSize: 11,
-    color: '#4A6CF7',
+    color: COLORS.accentLight,
     fontWeight: '600',
   },
   paywallFootnoteRow: {
@@ -2651,13 +3141,15 @@ const styles = StyleSheet.create({
   skipQuizButton: {
     alignSelf: 'center',
     marginTop: 28,
-    paddingVertical: 6,
-    paddingHorizontal: 16,
+    paddingVertical: 8,
+    paddingHorizontal: 20,
+    borderRadius: 20,
+    backgroundColor: 'rgba(0,0,0,0.03)',
   },
   skipQuizText: {
     fontSize: 13,
     color: COLORS.muted,
-    fontWeight: '500',
+    fontWeight: '600',
   },
   formWrap: {
     marginTop: 24,
@@ -2669,30 +3161,33 @@ const styles = StyleSheet.create({
     marginBottom: 16,
     letterSpacing: -0.5,
   },
+  formTitleAccent: {
+    color: COLORS.accent,
+  },
   textField: {
-    borderWidth: 1,
+    borderWidth: 1.5,
     borderColor: COLORS.softBorder,
-    borderRadius: 18,
+    borderRadius: 16,
     paddingHorizontal: 18,
     paddingVertical: 16,
     fontSize: 16,
     color: COLORS.ink,
-    backgroundColor: COLORS.white,
+    backgroundColor: COLORS.cardBg,
   },
   budgetField: {
     flexDirection: 'row',
     alignItems: 'center',
-    borderWidth: 1,
+    borderWidth: 1.5,
     borderColor: COLORS.softBorder,
-    borderRadius: 18,
+    borderRadius: 16,
     paddingHorizontal: 18,
     paddingVertical: 14,
-    backgroundColor: COLORS.white,
+    backgroundColor: COLORS.cardBg,
   },
   budgetCurrency: {
     fontSize: 28,
     fontWeight: '800',
-    color: '#4A6CF7',
+    color: COLORS.accent,
     marginRight: 8,
   },
   budgetInput: {
@@ -2709,174 +3204,247 @@ const styles = StyleSheet.create({
     lineHeight: 20,
     fontFamily: Platform.OS === 'ios' ? 'Helvetica Neue' : 'sans-serif',
   },
-  authWrap: {
-    marginTop: 4,
+  authScreen: {
+    flex: 1,
+    backgroundColor: COLORS.white,
+    paddingHorizontal: 24,
+    paddingBottom: 32,
+  },
+  authTopBar: {
+    paddingTop: 8,
+    minHeight: 48,
+    justifyContent: 'center',
+  },
+  authTopBarBack: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: COLORS.screenBg,
     alignItems: 'center',
-    width: '100%',
-    minHeight: 620,
+    justifyContent: 'center',
   },
-  authMascotImage: {
-    width: 220,
-    height: 210,
+  authTopBarBackIcon: {
+    fontSize: 26,
+    color: COLORS.ink,
+    lineHeight: 28,
+    fontWeight: '600',
+  },
+  authHero: {
+    alignItems: 'center',
+    paddingTop: 10,
+    paddingBottom: 8,
+    gap: 8,
+  },
+  authHeroSignUp: {
+    paddingTop: 56,
+    paddingBottom: 14,
+  },
+  authHeroMascot: {
+    width: 200,
+    height: 200,
     resizeMode: 'contain',
-    marginBottom: 8,
+    marginBottom: 2,
   },
-  authTitle: {
+  authHeroTitle: {
     fontSize: 28,
     fontWeight: '800',
     color: COLORS.ink,
-    marginBottom: 8,
     letterSpacing: -0.5,
     textAlign: 'center',
   },
-  authBody: {
+  authHeroTitleAccent: {
+    color: COLORS.accent,
+  },
+  authHeroSubtitle: {
     fontSize: 15,
     color: COLORS.muted,
-    marginBottom: 18,
-    fontFamily: Platform.OS === 'ios' ? 'Helvetica Neue' : 'sans-serif',
     textAlign: 'center',
-    paddingHorizontal: 8,
+    lineHeight: 22,
+    maxWidth: 300,
+  },
+  authErrorCard: {
+    backgroundColor: '#FEF2F2',
+    borderRadius: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    marginTop: 8,
+    marginBottom: 4,
+  },
+  authErrorText: {
+    fontSize: 13,
+    color: '#DC2626',
+    textAlign: 'center',
+    fontWeight: '500',
+  },
+  authFormArea: {
+    flex: 1,
+    gap: 12,
+    paddingTop: 4,
+  },
+  authFormAreaSignUp: {
+    gap: 16,
+    paddingTop: 28,
+  },
+  authCard: {
+    borderRadius: 20,
+    backgroundColor: COLORS.screenBg,
+    padding: 20,
+    gap: 14,
   },
   authFieldGroup: {
-    marginBottom: 14,
+    gap: 6,
   },
-  authLabel: {
-    fontSize: 12,
-    color: COLORS.ink,
-    fontWeight: '700',
-    marginBottom: 8,
-    letterSpacing: 0.3,
-    textTransform: 'uppercase',
+  authFieldLabel: {
+    fontSize: 13,
+    color: COLORS.inkSoft,
+    fontWeight: '600',
+    letterSpacing: 0.2,
   },
-  authInput: {
-    borderWidth: 1,
+  authFieldInput: {
+    borderWidth: 1.5,
     borderColor: COLORS.softBorder,
-    borderRadius: 16,
+    borderRadius: 14,
     paddingHorizontal: 16,
     paddingVertical: 14,
     fontSize: 15,
     color: COLORS.ink,
     backgroundColor: COLORS.white,
   },
-  authError: {
-    fontSize: 13,
-    color: '#E53E3E',
-    marginBottom: 12,
-  },
-  authActions: {
-    gap: 12,
-    marginTop: 8,
-    width: '100%',
-  },
-  authProviderButton: {
+  authCta: {
     borderRadius: 16,
-    paddingVertical: 14,
-    paddingHorizontal: 14,
-    borderWidth: 1,
-    borderColor: COLORS.softBorder,
+    paddingVertical: 16,
+    alignItems: 'center',
+    backgroundColor: COLORS.accent,
+    shadowColor: COLORS.accent,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.22,
+    shadowRadius: 10,
+    elevation: 4,
+  },
+  authCtaText: {
+    color: COLORS.white,
+    fontWeight: '700',
+    fontSize: 16,
+  },
+  authCtaOutline: {
+    borderRadius: 16,
+    paddingVertical: 16,
+    alignItems: 'center',
     backgroundColor: COLORS.white,
+    borderWidth: 1.5,
+    borderColor: COLORS.softBorder,
+  },
+  authCtaOutlineText: {
+    color: COLORS.ink,
+    fontWeight: '700',
+    fontSize: 16,
+  },
+  authDisabled: {
+    opacity: 0.5,
+  },
+  authDivider: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    marginVertical: 4,
+  },
+  authDividerLine: {
+    flex: 1,
+    height: 1,
+    backgroundColor: COLORS.softBorder,
+  },
+  authDividerLabel: {
+    fontSize: 13,
+    color: COLORS.muted,
+    fontWeight: '500',
+  },
+  authProviderBtn: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: 10,
+    borderRadius: 16,
+    paddingVertical: 15,
+    paddingHorizontal: 16,
+    backgroundColor: COLORS.white,
+    borderWidth: 1.5,
+    borderColor: COLORS.softBorder,
   },
-  authProviderButtonDark: {
-    backgroundColor: '#111827',
-    borderColor: '#111827',
+  authProviderBtnDark: {
+    backgroundColor: COLORS.navy,
+    borderColor: COLORS.navy,
   },
-  authProviderIcon: {
-    fontSize: 16,
+  authProviderBtnLabel: {
+    fontSize: 15,
+    fontWeight: '600',
     color: COLORS.ink,
+  },
+  authProviderBtnLabelLight: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: COLORS.white,
+  },
+  authProviderBtnIconGoogle: {
+    fontSize: 18,
     fontWeight: '700',
-    width: 16,
+    color: '#4285F4',
+    width: 20,
     textAlign: 'center',
   },
-  authProviderIconLight: {
-    color: '#FFFFFF',
+  authProviderBtnIconApple: {
+    fontSize: 18,
+    color: COLORS.white,
+    width: 20,
+    textAlign: 'center',
   },
-  authGoogleIcon: {
-    color: '#4285F4',
-  },
-  authProviderText: {
+  authProviderBtnIconEmail: {
+    fontSize: 16,
     color: COLORS.ink,
+    width: 20,
+    textAlign: 'center',
+  },
+  authSwitchLink: {
+    alignItems: 'center',
+    paddingVertical: 8,
+  },
+  authSwitchLinkTight: {
+    paddingVertical: 2,
+    marginTop: -4,
+  },
+  authSwitchLinkText: {
+    fontSize: 14,
+    color: COLORS.accent,
     fontWeight: '600',
-    fontSize: 15,
   },
-  authProviderTextLight: {
-    color: '#FFFFFF',
-  },
-  authEmailCard: {
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: COLORS.softBorder,
-    backgroundColor: '#F7F9FF',
-    padding: 14,
+  authFooter: {
+    paddingTop: 8,
     gap: 10,
-  },
-  authSecondaryButton: {
-    borderRadius: 16,
-    paddingVertical: 14,
     alignItems: 'center',
-    borderWidth: 1,
-    borderColor: COLORS.softBorder,
-    backgroundColor: COLORS.white,
   },
-  authSecondaryButtonText: {
-    color: COLORS.ink,
-    fontWeight: '600',
-    fontSize: 15,
-  },
-  authPrimaryButton: {
-    borderRadius: 16,
-    paddingVertical: 14,
-    alignItems: 'center',
-    backgroundColor: COLORS.ink,
-  },
-  authPrimaryButtonText: {
-    color: '#FFFFFF',
-    fontWeight: '600',
-    fontSize: 15,
-  },
-  authLinkButton: {
-    alignItems: 'center',
-    paddingVertical: 4,
-  },
-  authLinkText: {
-    fontSize: 13,
-    color: '#4A6CF7',
-    fontWeight: '600',
-  },
-  authTermsText: {
+  authTerms: {
     fontSize: 12,
     color: COLORS.muted,
     textAlign: 'center',
     lineHeight: 18,
-    paddingHorizontal: 10,
+    paddingHorizontal: 8,
   },
-  authTermsLink: {
-    color: '#4A6CF7',
+  authTermsHighlight: {
+    color: COLORS.accent,
     fontWeight: '600',
   },
-  authTermsFooter: {
-    marginTop: 88,
-    paddingBottom: 4,
-    width: '100%',
+  authBottomActions: {
+    marginTop: 12,
+    gap: 12,
+    paddingTop: 12,
   },
-  authBackToWelcomeButton: {
-    alignItems: 'center',
-    paddingVertical: 4,
-  },
-  authBackToWelcomeText: {
-    fontSize: 13,
-    color: COLORS.muted,
-    fontWeight: '600',
-  },
-  authButtonDisabled: {
-    opacity: 0.5,
+  contentNoScroll: {
+    flexGrow: 1,
   },
   helpWrap: {
-    marginTop: 24,
     alignItems: 'center',
+    flex: 1,
+    justifyContent: 'flex-start',
+    paddingTop: 24,
   },
   helpTitle: {
     fontSize: 22,
@@ -2885,6 +3453,7 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginBottom: 10,
     letterSpacing: -0.4,
+    maxWidth: 320,
   },
   helpBody: {
     fontSize: 15,
@@ -2892,21 +3461,22 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     lineHeight: 24,
     fontFamily: Platform.OS === 'ios' ? 'Helvetica Neue' : 'sans-serif',
+    maxWidth: 320,
   },
   permissionWrap: {
     marginTop: 20,
   },
   permissionCard: {
     marginTop: 20,
-    borderRadius: 20,
-    borderWidth: 0,
-    borderColor: 'transparent',
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: COLORS.softBorder,
     padding: 20,
-    backgroundColor: COLORS.white,
-    shadowColor: '#000',
+    backgroundColor: COLORS.cardBg,
+    shadowColor: COLORS.accent,
     shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.04,
-    shadowRadius: 8,
+    shadowOpacity: 0.06,
+    shadowRadius: 12,
     elevation: 2,
   },
   permissionTitle: {
@@ -2923,62 +3493,38 @@ const styles = StyleSheet.create({
     fontFamily: Platform.OS === 'ios' ? 'Helvetica Neue' : 'sans-serif',
   },
   permissionButton: {
-    backgroundColor: COLORS.ink,
+    backgroundColor: COLORS.accent,
     borderRadius: 14,
-    paddingVertical: 12,
+    paddingVertical: 13,
     alignItems: 'center',
   },
   permissionButtonText: {
     color: '#FFFFFF',
-    fontWeight: '600',
+    fontWeight: '700',
     fontSize: 15,
-  },
-  notificationCard: {
-    marginTop: 20,
-    borderRadius: 20,
-    borderWidth: 0,
-    borderColor: 'transparent',
-    padding: 20,
-    backgroundColor: COLORS.white,
-    gap: 16,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.04,
-    shadowRadius: 8,
-    elevation: 2,
-  },
-  notificationRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  notificationText: {
-    fontSize: 15,
-    color: COLORS.ink,
-    fontWeight: '500',
   },
   consequenceWrap: {
-    marginTop: 0,
     alignItems: 'center',
     flex: 1,
-    justifyContent: 'center',
-    paddingBottom: 120,
-    paddingHorizontal: 28,
+    justifyContent: 'flex-start',
+    paddingTop: 20,
+    paddingHorizontal: 24,
   },
   consequenceMascotImage: {
-    width: 220,
-    height: 220,
+    width: 200,
+    height: 200,
     resizeMode: 'contain',
-    marginBottom: 28,
+    marginBottom: 24,
   },
   consequenceTitle: {
-    fontSize: 24,
+    fontSize: 22,
     fontWeight: '800',
-    color: '#4A6CF7',
+    color: COLORS.accent,
     textAlign: 'center',
     marginBottom: 10,
-    letterSpacing: 0.5,
+    letterSpacing: 0.3,
     textTransform: 'uppercase',
+    maxWidth: 320,
   },
   consequenceBody: {
     fontSize: 15,
@@ -2986,14 +3532,15 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     lineHeight: 24,
     fontFamily: Platform.OS === 'ios' ? 'Helvetica Neue' : 'sans-serif',
+    maxWidth: 320,
   },
   questionWrap: {
-    marginTop: 28,
+    marginTop: 24,
   },
   questionLabel: {
     fontSize: 11,
     fontWeight: '700',
-    color: '#4A6CF7',
+    color: COLORS.accent,
     marginBottom: 10,
     letterSpacing: 1.5,
     textTransform: 'uppercase',
@@ -3006,6 +3553,13 @@ const styles = StyleSheet.create({
     letterSpacing: -0.4,
     lineHeight: 32,
   },
+  questionHint: {
+    marginTop: -12,
+    marginBottom: 10,
+    fontSize: 13,
+    color: COLORS.muted,
+    fontFamily: Platform.OS === 'ios' ? 'Helvetica Neue' : 'sans-serif',
+  },
   optionList: {
     gap: 10,
   },
@@ -3014,14 +3568,14 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingVertical: 15,
     paddingHorizontal: 16,
-    borderRadius: 18,
-    borderWidth: 1,
+    borderRadius: 16,
+    borderWidth: 1.5,
     borderColor: COLORS.softBorder,
-    backgroundColor: COLORS.white,
+    backgroundColor: COLORS.cardBg,
   },
   optionRowActive: {
-    borderColor: '#4A6CF7',
-    backgroundColor: 'rgba(74,108,247,0.06)',
+    borderColor: COLORS.accent,
+    backgroundColor: COLORS.accentSoft,
   },
   optionIndex: {
     width: 28,
@@ -3033,12 +3587,12 @@ const styles = StyleSheet.create({
     marginRight: 14,
   },
   optionIndexActive: {
-    backgroundColor: '#4A6CF7',
+    backgroundColor: COLORS.accent,
   },
   optionIndexText: {
     fontSize: 12,
     fontWeight: '700',
-    color: COLORS.ink,
+    color: COLORS.inkSoft,
   },
   optionIndexTextActive: {
     color: '#FFFFFF',
@@ -3054,10 +3608,10 @@ const styles = StyleSheet.create({
   },
   wheelWrap: {
     height: 220,
-    borderRadius: 22,
-    borderWidth: 1,
+    borderRadius: 18,
+    borderWidth: 1.5,
     borderColor: COLORS.softBorder,
-    backgroundColor: COLORS.white,
+    backgroundColor: COLORS.cardBg,
     overflow: 'hidden',
     justifyContent: 'center',
   },
@@ -3079,10 +3633,10 @@ const styles = StyleSheet.create({
     right: 16,
     top: 88,
     height: 44,
-    borderRadius: 14,
+    borderRadius: 12,
     borderWidth: 1.5,
-    borderColor: '#4A6CF7',
-    backgroundColor: '#F0F3FE',
+    borderColor: COLORS.accent,
+    backgroundColor: COLORS.accentSoft,
     alignItems: 'center',
     justifyContent: 'center',
     pointerEvents: 'none',
@@ -3100,15 +3654,15 @@ const styles = StyleSheet.create({
     marginBottom: 16,
   },
   bottomProgressTrackDark: {
-    backgroundColor: 'rgba(255,255,255,0.15)',
+    backgroundColor: 'rgba(255,255,255,0.12)',
   },
   bottomProgressFill: {
     height: 4,
     borderRadius: 999,
-    backgroundColor: '#4A6CF7',
+    backgroundColor: COLORS.accent,
   },
   bottomProgressFillDark: {
-    backgroundColor: '#7B9BFF',
+    backgroundColor: COLORS.accentLight,
   },
   bottomBar: {
     position: 'absolute',
@@ -3125,25 +3679,25 @@ const styles = StyleSheet.create({
   },
   primaryButton: {
     height: 56,
-    borderRadius: 28,
-    backgroundColor: '#4A6CF7',
+    borderRadius: 16,
+    backgroundColor: COLORS.accent,
     alignItems: 'center',
     justifyContent: 'center',
-    shadowColor: '#4A6CF7',
+    shadowColor: COLORS.accent,
     shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.22,
-    shadowRadius: 12,
+    shadowOpacity: 0.25,
+    shadowRadius: 14,
     elevation: 4,
   },
   primaryButtonLight: {
-    backgroundColor: '#4A6CF7',
-    shadowColor: '#4A6CF7',
+    backgroundColor: COLORS.accent,
+    shadowColor: COLORS.accent,
     shadowOpacity: 0.25,
   },
   primaryButtonWarm: {
-    backgroundColor: '#4A6CF7',
-    shadowColor: '#4A6CF7',
-    shadowOpacity: 0.22,
+    backgroundColor: COLORS.accent,
+    shadowColor: COLORS.accent,
+    shadowOpacity: 0.25,
   },
   primaryButtonDisabled: {
     opacity: 0.4,
@@ -3152,7 +3706,7 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 16,
     fontWeight: '700',
-    letterSpacing: 0.2,
+    letterSpacing: 0.3,
   },
   primaryButtonTextDark: {
     color: '#FFFFFF',
@@ -3171,26 +3725,27 @@ const styles = StyleSheet.create({
     width: 7,
     height: 7,
     borderRadius: 3.5,
-    backgroundColor: 'rgba(110,123,160,0.35)',
+    backgroundColor: 'rgba(136,146,168,0.3)',
   },
   progressDotActive: {
-    width: 18,
-    backgroundColor: '#4A6CF7',
+    width: 20,
+    borderRadius: 4,
+    backgroundColor: COLORS.accent,
   },
   consequencesCombinedWrap: {
     paddingTop: 6,
   },
   consequencesCombinedTitle: {
-    fontSize: 30,
+    fontSize: 28,
     fontWeight: '800',
     color: COLORS.ink,
     lineHeight: 36,
     marginBottom: 10,
-    letterSpacing: -0.7,
+    letterSpacing: -0.6,
   },
   consequencesCombinedSubtext: {
     fontSize: 15,
-    color: '#4D5877',
+    color: COLORS.inkSoft,
     lineHeight: 23,
     marginBottom: 16,
   },
@@ -3198,19 +3753,24 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   consequenceRowItem: {
-    borderRadius: 20,
+    borderRadius: 16,
     paddingVertical: 12,
     paddingHorizontal: 12,
-    backgroundColor: '#FFFFFF',
+    backgroundColor: COLORS.cardBg,
     borderWidth: 1,
-    borderColor: '#E3EAFB',
+    borderColor: COLORS.softBorder,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
+    shadowColor: COLORS.accent,
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.04,
+    shadowRadius: 8,
+    elevation: 1,
   },
   consequenceRowImage: {
-    width: 58,
-    height: 58,
+    width: 54,
+    height: 54,
     resizeMode: 'contain',
   },
   consequenceRowCopy: {
@@ -3219,12 +3779,12 @@ const styles = StyleSheet.create({
   consequenceRowTitle: {
     fontSize: 15,
     fontWeight: '800',
-    color: '#1E2D5A',
+    color: COLORS.ink,
     marginBottom: 4,
   },
   consequenceRowBody: {
     fontSize: 13,
-    color: '#5B688A',
+    color: COLORS.muted,
     lineHeight: 18,
   },
   consequencesCombinedGrid: {
@@ -3235,15 +3795,17 @@ const styles = StyleSheet.create({
   },
   consequenceCard: {
     width: '48%',
-    backgroundColor: COLORS.cream,
+    backgroundColor: COLORS.accentSoft,
     borderRadius: 16,
     padding: 14,
     marginBottom: 12,
     alignItems: 'center',
+    borderWidth: 1,
+    borderColor: COLORS.softBorder,
   },
   consequenceCardImage: {
-    width: 56,
-    height: 56,
+    width: 52,
+    height: 52,
     resizeMode: 'contain',
     marginBottom: 8,
   },
@@ -3263,25 +3825,27 @@ const styles = StyleSheet.create({
   showcaseWrap: {
     alignItems: 'center',
     paddingHorizontal: 24,
-    paddingTop: 16,
+    paddingTop: 20,
   },
   showcaseImageWrap: {
-    width: 220,
-    height: 220,
+    width: 200,
+    height: 200,
     borderRadius: 24,
-    backgroundColor: COLORS.cream,
+    backgroundColor: COLORS.accentSoft,
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: 28,
-    shadowColor: '#000',
+    shadowColor: COLORS.accent,
     shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.06,
-    shadowRadius: 12,
+    shadowOpacity: 0.08,
+    shadowRadius: 16,
     elevation: 3,
+    borderWidth: 1,
+    borderColor: COLORS.softBorder,
   },
   showcaseImage: {
-    width: 160,
-    height: 160,
+    width: 150,
+    height: 150,
     resizeMode: 'contain',
   },
   showcaseTitle: {
@@ -3290,9 +3854,10 @@ const styles = StyleSheet.create({
     color: COLORS.ink,
     textAlign: 'center',
     marginBottom: 12,
+    letterSpacing: -0.4,
   },
   showcaseBody: {
-    fontSize: 16,
+    fontSize: 15,
     color: COLORS.muted,
     textAlign: 'center',
     lineHeight: 24,
@@ -3321,6 +3886,13 @@ const styles = StyleSheet.create({
     letterSpacing: 0.5,
     marginBottom: 10,
   },
+  affirmationPrompt: {
+    fontSize: 15,
+    color: '#FFFFFF',
+    fontWeight: '600',
+    lineHeight: 22,
+    marginBottom: 12,
+  },
   affirmationInput: {
     fontSize: 16,
     color: '#FFFFFF',
@@ -3334,6 +3906,13 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: 24,
+  },
+  placeholderGraphImage: {
+    width: '100%',
+    maxWidth: 380,
+    height: 350,
+    resizeMode: 'contain',
+    marginTop: 20,
   },
   placeholderText: {
     fontSize: 18,

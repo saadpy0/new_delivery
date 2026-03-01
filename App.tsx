@@ -10,6 +10,7 @@ import { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Linking,
+  NativeModules,
   Platform,
   Pressable,
   ScrollView,
@@ -21,6 +22,7 @@ import {
 } from 'react-native';
 import Purchases from 'react-native-purchases';
 import type { Session } from '@supabase/supabase-js';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   SafeAreaProvider,
   useSafeAreaInsets,
@@ -31,10 +33,13 @@ import AccountScreen from './AccountScreen';
 import Onboarding from './Onboarding';
 import MainDashboard from './MainDashboard';
 import { supabase } from './supabaseClient';
+import { blockingService } from './BlockingService';
 
 const REVENUECAT_IOS_API_KEY_PLACEHOLDER: string = 'REVENUECAT_IOS_PUBLIC_SDK_KEY';
 const REVENUECAT_IOS_API_KEY: string = RC_IOS_API_KEY;
 const PRO_ENTITLEMENT_ID: string = 'undelivery Pro';
+const ONBOARDING_DRAFT_KEY = '@onboarding_draft_v1';
+const { NotificationPermissionManager } = NativeModules;
 
 function App() {
   const isDarkMode = useColorScheme() === 'dark';
@@ -44,6 +49,7 @@ function App() {
   const [hadSessionOnLaunch, setHadSessionOnLaunch] = useState(false);
   const [onboardingComplete, setOnboardingComplete] = useState(false);
   const [pendingOverride, setPendingOverride] = useState(false);
+  const [startOnWelcome, setStartOnWelcome] = useState(false);
 
   useEffect(() => {
     const configurePurchases = async () => {
@@ -70,22 +76,46 @@ function App() {
   useEffect(() => {
     let isMounted = true;
 
+    const syncSessionState = async (newSession: Session | null) => {
+      if (!isMounted) return;
+      setSession(newSession);
+
+      if (!newSession?.user?.id) {
+        setOnboardingComplete(false);
+        return;
+      }
+
+      const { data: onboardingRow, error } = await supabase
+        .from('onboarding')
+        .select('user_id')
+        .eq('user_id', newSession.user.id)
+        .maybeSingle();
+
+      if (!isMounted) return;
+
+      if (error) {
+        setOnboardingComplete(false);
+        return;
+      }
+
+      setOnboardingComplete(Boolean(onboardingRow));
+      if (onboardingRow) {
+        setHadSessionOnLaunch(true);
+      }
+    };
+
     const loadSession = async () => {
       const { data } = await supabase.auth.getSession();
-      if (!isMounted) return;
       const existingSession = data.session ?? null;
-      setSession(existingSession);
-      if (existingSession) {
-        setHadSessionOnLaunch(true);
-        setOnboardingComplete(true);
-      }
+      await syncSessionState(existingSession);
+      if (!isMounted) return;
       setIsAuthLoading(false);
     };
 
     void loadSession();
 
     const { data: authListener } = supabase.auth.onAuthStateChange((_event, newSession) => {
-      setSession(newSession);
+      void syncSessionState(newSession);
     });
 
     return () => {
@@ -117,6 +147,43 @@ function App() {
     };
 
     void syncRevenueCatUser();
+  }, [session?.user?.id]);
+
+  useEffect(() => {
+    const clearLegacyReminders = async () => {
+      try {
+        if (NotificationPermissionManager?.cancelAllAppReminders) {
+          await NotificationPermissionManager.cancelAllAppReminders();
+          return;
+        }
+        if (NotificationPermissionManager?.cancelOverrideOrderPrompt) {
+          await NotificationPermissionManager.cancelOverrideOrderPrompt();
+        }
+      } catch (error) {
+        console.warn('Failed to clear pending reminders on launch', error);
+      }
+    };
+
+    void clearLegacyReminders();
+  }, []);
+
+  useEffect(() => {
+    if (session?.user?.id) return;
+    const enforceSignedOutCleanup = async () => {
+      try {
+        await blockingService.removeBlock();
+        if (NotificationPermissionManager?.cancelAllAppReminders) {
+          await NotificationPermissionManager.cancelAllAppReminders();
+          return;
+        }
+        if (NotificationPermissionManager?.cancelOverrideOrderPrompt) {
+          await NotificationPermissionManager.cancelOverrideOrderPrompt();
+        }
+      } catch (error) {
+        console.warn('Failed signed-out cleanup', error);
+      }
+    };
+    void enforceSignedOutCleanup();
   }, [session?.user?.id]);
 
   useEffect(() => {
@@ -210,18 +277,34 @@ function App() {
           onReturnToWelcome={() => {
             setOnboardingComplete(false);
             setShowDashboardOverride(false);
+            setStartOnWelcome(true);
           }}
           onSignOut={() => {
-            setOnboardingComplete(false);
-            setHadSessionOnLaunch(false);
-            setShowDashboardOverride(false);
-            supabase.auth.signOut();
+            void (async () => {
+              try {
+                await blockingService.removeBlock();
+                if (NotificationPermissionManager?.cancelAllAppReminders) {
+                  await NotificationPermissionManager.cancelAllAppReminders();
+                } else if (NotificationPermissionManager?.cancelOverrideOrderPrompt) {
+                  await NotificationPermissionManager.cancelOverrideOrderPrompt();
+                }
+              } catch (error) {
+                console.warn('Failed to clear blocking/reminders on sign out', error);
+              }
+              setOnboardingComplete(false);
+              setHadSessionOnLaunch(false);
+              setShowDashboardOverride(false);
+              setStartOnWelcome(true);
+              await AsyncStorage.removeItem(ONBOARDING_DRAFT_KEY);
+              await supabase.auth.signOut();
+            })();
           }}
         />
       ) : (
         <Onboarding
           onSkipToDashboard={() => setShowDashboardOverride(true)}
           onOnboardingComplete={() => setOnboardingComplete(true)}
+          startAtWelcome={startOnWelcome}
         />
       )}
     </SafeAreaProvider>
@@ -250,6 +333,11 @@ function AppContent({
   const syncProfileSubscription = async (info: any, purchasedPkg?: any) => {
     if (!userId) return;
     const entitlement = (info as any)?.entitlements?.active?.[PRO_ENTITLEMENT_ID];
+    const rawPeriodType = entitlement?.periodType ?? null;
+    const periodType = rawPeriodType ? String(rawPeriodType).toLowerCase() : null;
+    const isTrial = Boolean(entitlement) && periodType === 'trial';
+    const expiresDate = entitlement?.expirationDate ?? null;
+    const willRenew = entitlement?.willRenew ?? null;
 
     let productId: string | null = null;
     let subscriptionName: string | null = null;
@@ -289,6 +377,10 @@ function AppContent({
           rc_product_id: productId,
           rc_subscription_name: subscriptionName,
           rc_subscription_price: subscriptionPrice,
+          rc_period_type: periodType,
+          rc_is_trial: isTrial,
+          rc_expires_date: expiresDate,
+          rc_will_renew: willRenew,
           rc_last_event_at: new Date().toISOString(),
         },
         { onConflict: 'user_id' },

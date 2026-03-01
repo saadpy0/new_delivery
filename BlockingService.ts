@@ -7,7 +7,6 @@ const { ScreenTimeManager } = NativeModules;
 const KEYS = {
   SETTINGS: '@blocking_settings',
   BLOCK_STATE: '@blocking_state',
-  SCHEDULE: '@blocking_schedule',
 };
 
 // ── Types ──
@@ -36,14 +35,6 @@ export type PerModeCooldown = {
   precautionary: number; // minutes (default 0 — instant unlock)
 };
 
-export type ScheduleConfig = {
-  enabled: boolean;
-  startHour: number;
-  startMinute: number;
-  endHour: number;
-  endMinute: number;
-};
-
 export type BlockingSettings = {
   /** User has selected apps and enabled blocking */
   enabled: boolean;
@@ -59,8 +50,6 @@ export type BlockingSettings = {
   penaltyAmount: number;
   /** Number of apps/categories selected */
   selectedAppCount: number;
-  /** Scheduled blocking config */
-  schedule: ScheduleConfig;
 };
 
 export type BlockState = {
@@ -84,14 +73,6 @@ const DEFAULT_COOLDOWNS: PerModeCooldown = {
   precautionary: 0,
 };
 
-const DEFAULT_SCHEDULE: ScheduleConfig = {
-  enabled: false,
-  startHour: 11,
-  startMinute: 0,
-  endHour: 14,
-  endMinute: 0,
-};
-
 const DEFAULT_SETTINGS: BlockingSettings = {
   enabled: false,
   mode: 'moderate',
@@ -100,7 +81,6 @@ const DEFAULT_SETTINGS: BlockingSettings = {
   penaltyEnabled: false,
   penaltyAmount: 5,
   selectedAppCount: 0,
-  schedule: { ...DEFAULT_SCHEDULE },
 };
 
 const DEFAULT_STATE: BlockState = {
@@ -233,6 +213,9 @@ class BlockingService {
 
   async applyBlock(type: BlockType): Promise<void> {
     try {
+      if (typeof ScreenTimeManager?.setShieldContext === 'function') {
+        await ScreenTimeManager.setShieldContext(type);
+      }
       await ScreenTimeManager.blockApps();
       this.state.isShieldActive = true;
       this.state.activeBlockType = type;
@@ -302,47 +285,6 @@ class BlockingService {
     await this.saveState();
   }
 
-  // ── Schedule management ──
-
-  async setSchedule(config: Partial<ScheduleConfig>): Promise<void> {
-    const schedule = { ...this.settings.schedule, ...config };
-    this.settings.schedule = schedule;
-    await this.saveSettings();
-
-    if (schedule.enabled && this.settings.selectedAppCount > 0) {
-      try {
-        await ScreenTimeManager.setSchedule(
-          schedule.startHour,
-          schedule.startMinute,
-          schedule.endHour,
-          schedule.endMinute,
-        );
-      } catch (error) {
-        console.warn('BlockingService: failed to set schedule', error);
-      }
-    } else {
-      try {
-        await ScreenTimeManager.clearSchedule();
-      } catch (error) {
-        console.warn('BlockingService: failed to clear schedule', error);
-      }
-    }
-  }
-
-  async clearSchedule(): Promise<void> {
-    this.settings.schedule.enabled = false;
-    await this.saveSettings();
-    try {
-      await ScreenTimeManager.clearSchedule();
-    } catch (error) {
-      console.warn('BlockingService: failed to clear schedule', error);
-    }
-  }
-
-  getSchedule(): ScheduleConfig {
-    return { ...this.settings.schedule };
-  }
-
   // ── Weekly reset ──
 
   async resetWeeklyState(): Promise<void> {
@@ -379,7 +321,8 @@ class BlockingService {
     try {
       const raw = await AsyncStorage.getItem(KEYS.SETTINGS);
       if (raw) {
-        this.settings = { ...DEFAULT_SETTINGS, ...JSON.parse(raw) };
+        const parsed = JSON.parse(raw);
+        this.settings = { ...DEFAULT_SETTINGS, ...parsed };
       }
     } catch (error) {
       console.warn('BlockingService: failed to load settings', error);

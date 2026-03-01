@@ -11,7 +11,7 @@ class ShieldActionExtension: ShieldActionDelegate {
 
     let content = UNMutableNotificationContent()
     content.title = "QuitBite"
-    content.body = "Tap here to open QuitBite and start your override flow."
+    content.body = "Tap this notification to enter QuitBite and start your override flow."
     content.sound = .default
     content.userInfo = ["action": "override"]
 

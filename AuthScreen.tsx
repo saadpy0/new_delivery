@@ -10,6 +10,7 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import appleAuth from '@invertase/react-native-apple-authentication';
 import { supabase } from './supabaseClient';
 
 export default function AuthScreen() {
@@ -38,6 +39,40 @@ export default function AuthScreen() {
     }
 
     setIsLoading(false);
+  };
+
+  const handleAppleSignIn = async () => {
+    setIsLoading(true);
+    setError(null);
+    setMessage(null);
+    try {
+      const nonce = `nonce-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      const appleResponse = await appleAuth.performRequest({
+        requestedOperation: appleAuth.Operation.LOGIN,
+        requestedScopes: [appleAuth.Scope.EMAIL, appleAuth.Scope.FULL_NAME],
+        nonce,
+      });
+      const identityToken = appleResponse.identityToken;
+      if (!identityToken) {
+        setError('Apple sign in failed: missing identity token.');
+        return;
+      }
+      const { error: tokenError } = await supabase.auth.signInWithIdToken({
+        provider: 'apple',
+        token: identityToken,
+        nonce,
+      });
+      if (tokenError) {
+        setError(tokenError.message);
+      }
+    } catch (authError: any) {
+      if (authError?.code === appleAuth.Error.CANCELED) {
+        return;
+      }
+      setError(authError?.message ?? 'Unable to sign in with Apple.');
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const handleGoogleSignIn = async () => {
@@ -137,6 +172,19 @@ export default function AuthScreen() {
         {message ? <Text style={styles.messageText}>{message}</Text> : null}
 
         <View style={styles.actions}>
+          {Platform.OS === 'ios' ? (
+            <Pressable
+              onPress={handleAppleSignIn}
+              style={[styles.secondaryButton, isLoading && styles.buttonDisabled]}
+              disabled={isLoading}
+            >
+              {isLoading ? (
+                <ActivityIndicator color="#111827" />
+              ) : (
+                <Text style={styles.secondaryButtonText}>Continue with Apple</Text>
+              )}
+            </Pressable>
+          ) : null}
           <Pressable
             onPress={handleGoogleSignIn}
             style={[styles.secondaryButton, isLoading && styles.buttonDisabled]}

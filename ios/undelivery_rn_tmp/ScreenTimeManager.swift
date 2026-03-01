@@ -14,6 +14,7 @@ private var savedSelection = FamilyActivitySelection()
 private let selectionKey = "ScreenTimeManager_selection"
 private let sharedSuiteName = "group.com.quitbite.quitbite"
 private let sharedSelectionKey = "shared_selection"
+private let sharedBlockTypeKey = "shield_block_type"
 
 @objc(ScreenTimeManager)
 class ScreenTimeManager: NSObject {
@@ -101,6 +102,12 @@ class ScreenTimeManager: NSObject {
         ? nil
         : .specific(categoryTokens)
 
+      let defaults = UserDefaults(suiteName: sharedSuiteName)
+      if defaults?.string(forKey: sharedBlockTypeKey) == nil {
+        defaults?.set("budget", forKey: sharedBlockTypeKey)
+      }
+      defaults?.synchronize()
+
       resolve(true)
     } else {
       reject("unsupported", "Screen Time requires iOS 16 or later.", nil)
@@ -117,10 +124,31 @@ class ScreenTimeManager: NSObject {
     if #available(iOS 16.0, *) {
       settingsStore.shield.applications = nil
       settingsStore.shield.applicationCategories = nil
+      let defaults = UserDefaults(suiteName: sharedSuiteName)
+      defaults?.set("none", forKey: sharedBlockTypeKey)
+      defaults?.synchronize()
       resolve(true)
     } else {
       reject("unsupported", "Screen Time requires iOS 16 or later.", nil)
     }
+  }
+
+  @objc(setShieldContext:resolver:rejecter:)
+  func setShieldContext(
+    _ blockType: String,
+    resolver resolve: @escaping RCTPromiseResolveBlock,
+    rejecter reject: @escaping RCTPromiseRejectBlock
+  ) {
+    let normalized = blockType.lowercased()
+    guard normalized == "budget" || normalized == "precau" || normalized == "none" else {
+      reject("invalid_block_type", "Unsupported block type: \(blockType)", nil)
+      return
+    }
+
+    let defaults = UserDefaults(suiteName: sharedSuiteName)
+    defaults?.set(normalized, forKey: sharedBlockTypeKey)
+    defaults?.synchronize()
+    resolve(true)
   }
 
   // MARK: - Get current block status and selection count
@@ -141,73 +169,6 @@ class ScreenTimeManager: NSObject {
         "isBlocking": isBlocking,
         "selectedCount": count,
       ])
-    } else {
-      reject("unsupported", "Screen Time requires iOS 16 or later.", nil)
-    }
-  }
-
-  // MARK: - Persistence helpers
-
-  // MARK: - Schedule management
-
-  @objc(setSchedule:startMinute:endHour:endMinute:resolver:rejecter:)
-  func setSchedule(
-    _ startHour: Int,
-    startMinute: Int,
-    endHour: Int,
-    endMinute: Int,
-    resolver resolve: @escaping RCTPromiseResolveBlock,
-    rejecter reject: @escaping RCTPromiseRejectBlock
-  ) {
-    if #available(iOS 16.0, *) {
-      let center = DeviceActivityCenter()
-
-      let startComponents = DateComponents(hour: startHour, minute: startMinute)
-      let endComponents = DateComponents(hour: endHour, minute: endMinute)
-
-      let schedule = DeviceActivitySchedule(
-        intervalStart: startComponents,
-        intervalEnd: endComponents,
-        repeats: true
-      )
-
-      do {
-        try center.startMonitoring(
-          DeviceActivityName("quitbite.scheduled.block"),
-          during: schedule
-        )
-        // Save schedule info to shared defaults so extension can read it
-        let defaults = UserDefaults(suiteName: sharedSuiteName)
-        defaults?.set(true, forKey: "scheduleEnabled")
-        defaults?.set(startHour, forKey: "scheduleStartHour")
-        defaults?.set(startMinute, forKey: "scheduleStartMinute")
-        defaults?.set(endHour, forKey: "scheduleEndHour")
-        defaults?.set(endMinute, forKey: "scheduleEndMinute")
-        defaults?.synchronize()
-
-        resolve(true)
-      } catch {
-        reject("schedule_failed", error.localizedDescription, error)
-      }
-    } else {
-      reject("unsupported", "Screen Time requires iOS 16 or later.", nil)
-    }
-  }
-
-  @objc(clearSchedule:rejecter:)
-  func clearSchedule(
-    _ resolve: @escaping RCTPromiseResolveBlock,
-    rejecter reject: @escaping RCTPromiseRejectBlock
-  ) {
-    if #available(iOS 16.0, *) {
-      let center = DeviceActivityCenter()
-      center.stopMonitoring([DeviceActivityName("quitbite.scheduled.block")])
-
-      let defaults = UserDefaults(suiteName: sharedSuiteName)
-      defaults?.set(false, forKey: "scheduleEnabled")
-      defaults?.synchronize()
-
-      resolve(true)
     } else {
       reject("unsupported", "Screen Time requires iOS 16 or later.", nil)
     }
