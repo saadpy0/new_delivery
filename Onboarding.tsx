@@ -57,8 +57,27 @@ const getOnboardingDraftKey = async (): Promise<string> => {
   return `${ONBOARDING_DRAFT_KEY_PREFIX}_${data?.user?.id ?? 'guest'}`;
 };
 const IOS_BUNDLE_ID = 'com.quitbite.quitbite';
-const TERMS_URL = 'https://undelivery.app/terms';
-const PRIVACY_URL = 'https://undelivery.app/privacy';
+const SUPPORT_EMAIL = 'support@quitbite.xyz';
+const AUTH_POLICY_CONTENT = {
+  terms: {
+    title: 'Terms of Use',
+    effectiveDate: 'Effective date: February 24, 2026',
+    paragraphs: [
+      'QuitBite provides budgeting and app-blocking assistance tools. It is not financial, medical, or legal advice. You are responsible for your spending and device usage decisions.',
+      'Subscriptions auto-renew unless canceled in Apple ID settings at least 24 hours before renewal. Payment is charged to your Apple account according to the selected plan and trial terms shown before purchase.',
+      'You agree not to misuse the service, reverse engineer it, or use it in ways that violate applicable law. We may suspend accounts for abuse, fraud, or security risks.',
+    ],
+  },
+  privacy: {
+    title: 'Privacy Policy',
+    effectiveDate: 'Effective date: February 24, 2026',
+    paragraphs: [
+      'We collect account data (name, email), budget and order data, blocker settings, and chat history to provide core app functionality. We use this data to operate blocking workflows, display reports, and sync progress across sessions.',
+      `We do not sell personal data. Subscription status is processed via RevenueCat and Apple. You can request deletion of account data by contacting ${SUPPORT_EMAIL} from your account email.`,
+      'By using the app, you consent to this processing for service delivery, security, analytics required for app operation, and legal compliance.',
+    ],
+  },
+} as const;
 const REQUIRED_AFFIRMATION = 'I commit to protecting my health and money by reducing food delivery this week.';
 const SUBSCRIPTION_PRODUCT_IDS = {
   weekly: 'com.quitbite.quitbite.weekly',
@@ -326,6 +345,7 @@ export default function Onboarding({
   const [customerInfo, setCustomerInfo] = useState<any | null>(null);
   const [selectedAppCount, setSelectedAppCount] = useState(0);
   const [affirmation, setAffirmation] = useState('');
+  const [authPolicyModalType, setAuthPolicyModalType] = useState<'terms' | 'privacy' | null>(null);
   const ratingPromptShownRef = useRef(false);
   const totalSteps = SCREENS.length;
   const current = SCREENS[step];
@@ -334,6 +354,7 @@ export default function Onboarding({
     && parsedWeeklyBudget >= MIN_WEEKLY_BUDGET
     && parsedWeeklyBudget <= MAX_WEEKLY_BUDGET;
   const oauthRedirectUrl = 'com.quitbite.quitbite://login-callback';
+  const authPolicyModalContent = authPolicyModalType ? AUTH_POLICY_CONTENT[authPolicyModalType] : null;
 
   const resolvePackageForPlan = (plan: 'weekly' | 'monthly' | 'annual') => {
     const productId = SUBSCRIPTION_PRODUCT_IDS[plan];
@@ -502,7 +523,7 @@ export default function Onboarding({
     ratingPromptShownRef.current = true;
 
     Alert.alert(
-      'Enjoying undelivery?',
+      'Enjoying QuitBite?',
       'Would you like to rate us on the App Store?',
       [
         { text: 'Not now', style: 'cancel' },
@@ -1206,7 +1227,7 @@ export default function Onboarding({
                   style={styles.authTermsHighlight}
                   accessibilityRole="link"
                   onPress={() => {
-                    void Linking.openURL(TERMS_URL);
+                    setAuthPolicyModalType('terms');
                   }}
                 >
                   Terms of Service
@@ -1216,7 +1237,7 @@ export default function Onboarding({
                   style={styles.authTermsHighlight}
                   accessibilityRole="link"
                   onPress={() => {
-                    void Linking.openURL(PRIVACY_URL);
+                    setAuthPolicyModalType('privacy');
                   }}
                 >
                   Privacy Policy
@@ -1224,6 +1245,35 @@ export default function Onboarding({
               </Text>
             ) : null}
           </View>
+
+          <Modal
+            visible={authPolicyModalType !== null}
+            transparent
+            animationType="slide"
+            onRequestClose={() => setAuthPolicyModalType(null)}
+          >
+            <View style={styles.authPolicyModalBackdrop}>
+              <View style={styles.authPolicyModalSheet}>
+                <View style={styles.authPolicyModalHeader}>
+                  <Text style={styles.authPolicyModalTitle}>{authPolicyModalContent?.title}</Text>
+                  <Pressable onPress={() => setAuthPolicyModalType(null)} style={styles.authPolicyModalCloseBtn}>
+                    <Text style={styles.authPolicyModalCloseBtnText}>✕</Text>
+                  </Pressable>
+                </View>
+
+                <ScrollView
+                  style={styles.authPolicyModalContent}
+                  contentContainerStyle={styles.authPolicyModalContentInner}
+                  showsVerticalScrollIndicator={false}
+                >
+                  <Text style={styles.authPolicyEffectiveDate}>{authPolicyModalContent?.effectiveDate}</Text>
+                  {authPolicyModalContent?.paragraphs.map((paragraph) => (
+                    <Text key={paragraph} style={styles.authPolicyParagraph}>{paragraph}</Text>
+                  ))}
+                </ScrollView>
+              </View>
+            </View>
+          </Modal>
         </View>
       );
     }
@@ -2079,7 +2129,14 @@ export default function Onboarding({
           behavior={Platform.OS === 'ios' ? 'padding' : undefined}
           style={styles.container}
         >
-          {renderContent()}
+          <ScrollView
+            style={styles.authScreenScroll}
+            contentContainerStyle={styles.authScreenScrollContent}
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}
+          >
+            {renderContent()}
+          </ScrollView>
         </KeyboardAvoidingView>
       </SafeAreaView>
     );
@@ -3210,6 +3267,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: 24,
     paddingBottom: 32,
   },
+  authScreenScroll: {
+    flex: 1,
+  },
+  authScreenScrollContent: {
+    flexGrow: 1,
+  },
   authTopBar: {
     paddingTop: 8,
     minHeight: 48,
@@ -3431,6 +3494,62 @@ const styles = StyleSheet.create({
   authTermsHighlight: {
     color: COLORS.accent,
     fontWeight: '600',
+  },
+  authPolicyModalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(15,26,46,0.45)',
+    justifyContent: 'flex-end',
+  },
+  authPolicyModalSheet: {
+    maxHeight: '78%',
+    backgroundColor: COLORS.white,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    paddingHorizontal: 20,
+    paddingTop: 16,
+    paddingBottom: 26,
+  },
+  authPolicyModalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 10,
+  },
+  authPolicyModalTitle: {
+    fontSize: 20,
+    fontWeight: '800',
+    color: COLORS.ink,
+    letterSpacing: -0.3,
+  },
+  authPolicyModalCloseBtn: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: COLORS.warmGray,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  authPolicyModalCloseBtnText: {
+    color: COLORS.ink,
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  authPolicyModalContent: {
+    marginTop: 2,
+  },
+  authPolicyModalContentInner: {
+    paddingBottom: 8,
+  },
+  authPolicyEffectiveDate: {
+    color: COLORS.ink,
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  authPolicyParagraph: {
+    color: COLORS.inkSoft,
+    fontSize: 13,
+    lineHeight: 20,
+    marginTop: 10,
   },
   authBottomActions: {
     marginTop: 12,

@@ -48,8 +48,10 @@ type SheetKey = 'budget' | 'opportunity' | null;
 type SettingsScreenKey = 'account' | 'blocker' | 'faq' | 'contact' | 'privacy' | 'terms' | null;
 const PRO_ENTITLEMENT_ID = 'undelivery Pro';
 const OPENAI_API_KEY_PLACEHOLDER = 'OPENAI_API_KEY_HERE';
-const APP_STORE_REVIEW_URL = 'https://apps.apple.com/app/id0000000000?action=write-review';
-const APP_STORE_FALLBACK_URL = 'https://apps.apple.com/';
+const APP_STORE_APP_ID: string = '6758622831';
+const APP_STORE_REVIEW_URL = `itms-apps://apps.apple.com/app/id${APP_STORE_APP_ID}?action=write-review`;
+const APP_STORE_SEARCH_URL = 'itms-apps://apps.apple.com/us/search?term=QuitBite';
+const APP_STORE_WEB_SEARCH_URL = 'https://apps.apple.com/us/search?term=QuitBite';
 const HOME_WEEK_START_KEY = '@quitbite_home_week_start_v1';
 
 type ChatMessage = {
@@ -568,13 +570,21 @@ export default function MainDashboard({
   }, [refreshBlockState]);
 
   const handleRateApp = useCallback(async () => {
-    const targetUrl = APP_STORE_REVIEW_URL.includes('id0000000000') ? APP_STORE_FALLBACK_URL : APP_STORE_REVIEW_URL;
+    const hasConfiguredAppId = APP_STORE_APP_ID !== '0000000000';
+    const targetUrl = hasConfiguredAppId ? APP_STORE_REVIEW_URL : APP_STORE_SEARCH_URL;
     const supported = await Linking.canOpenURL(targetUrl);
-    if (!supported) {
-      Alert.alert('Unavailable', 'Unable to open the App Store right now.');
+    if (supported) {
+      await Linking.openURL(targetUrl);
       return;
     }
-    await Linking.openURL(targetUrl);
+
+    const webSupported = await Linking.canOpenURL(APP_STORE_WEB_SEARCH_URL);
+    if (webSupported) {
+      await Linking.openURL(APP_STORE_WEB_SEARCH_URL);
+      return;
+    }
+
+    Alert.alert('Unavailable', 'Unable to open the App Store right now.');
   }, []);
 
   const handleSaveAccountInfo = useCallback(async () => {
@@ -1521,7 +1531,6 @@ export default function MainDashboard({
             { q: 'How does blocking work?', a: 'The app evaluates your spending against your budget and selected mode, then applies iOS Screen Time shields to selected delivery apps.' },
             { q: 'When does my weekly budget reset?', a: 'Your budget is tracked weekly. You can update the weekly amount anytime from Settings > Budget.' },
             { q: 'Will chat coach history be saved?', a: 'Yes. Chat history is tied to your account and restored when you sign back in.' },
-            { q: 'Can I customize blocker intensity?', a: 'Yes. Choose Gentle, Moderate, or Precautionary and tune cooldowns per mode in Blocker settings.' },
           ].map((item) => (
             <View key={item.q} style={{ backgroundColor: modeVisual.cardSurface, borderRadius: 14, borderWidth: 1, borderColor: modeVisual.cardBorder, padding: 14, marginBottom: 10 }}>
               <Text style={{ color: modeVisual.valueColor, fontSize: 14, fontWeight: '700' }}>{item.q}</Text>
@@ -1543,7 +1552,7 @@ export default function MainDashboard({
           </View>
           <View style={{ backgroundColor: modeVisual.cardSurface, borderRadius: 14, borderWidth: 1, borderColor: modeVisual.cardBorder, padding: 16 }}>
             <Text style={{ color: modeVisual.valueColor, fontSize: 14, fontWeight: '700' }}>Need help with billing, blocking, or bugs?</Text>
-            <Text style={{ color: modeVisual.labelColor, fontSize: 13, marginTop: 8, lineHeight: 20 }}>Email us at support@undelivery.app with your account email and a short issue description. We usually respond within 24–48 hours.</Text>
+            <Text style={{ color: modeVisual.labelColor, fontSize: 13, marginTop: 8, lineHeight: 20 }}>Email us at support@quitbite.xyz with your account email and a short issue description. We usually respond within 24–48 hours.</Text>
             <Text style={{ color: modeVisual.labelColor, fontSize: 13, marginTop: 10, lineHeight: 20 }}>For billing issues, include your subscription tier and purchase date to speed up resolution.</Text>
           </View>
         </ScrollView>
@@ -1562,7 +1571,7 @@ export default function MainDashboard({
           <View style={{ backgroundColor: modeVisual.cardSurface, borderRadius: 14, borderWidth: 1, borderColor: modeVisual.cardBorder, padding: 16 }}>
             <Text style={{ color: modeVisual.valueColor, fontSize: 14, fontWeight: '700' }}>Effective date: February 24, 2026</Text>
             <Text style={{ color: modeVisual.labelColor, fontSize: 13, marginTop: 10, lineHeight: 20 }}>We collect account data (name, email), budget and order data, blocker settings, and chat history to provide core app functionality. We use this data to operate blocking workflows, display reports, and sync progress across sessions.</Text>
-            <Text style={{ color: modeVisual.labelColor, fontSize: 13, marginTop: 10, lineHeight: 20 }}>We do not sell personal data. Subscription status is processed via RevenueCat and Apple. You can request deletion of account data by contacting support@undelivery.app from your account email.</Text>
+            <Text style={{ color: modeVisual.labelColor, fontSize: 13, marginTop: 10, lineHeight: 20 }}>We do not sell personal data. Subscription status is processed via RevenueCat and Apple. You can request deletion of account data by contacting support@quitbite.xyz from your account email.</Text>
             <Text style={{ color: modeVisual.labelColor, fontSize: 13, marginTop: 10, lineHeight: 20 }}>By using the app, you consent to this processing for service delivery, security, analytics required for app operation, and legal compliance.</Text>
           </View>
         </ScrollView>
@@ -1580,7 +1589,7 @@ export default function MainDashboard({
           </View>
           <View style={{ backgroundColor: modeVisual.cardSurface, borderRadius: 14, borderWidth: 1, borderColor: modeVisual.cardBorder, padding: 16 }}>
             <Text style={{ color: modeVisual.valueColor, fontSize: 14, fontWeight: '700' }}>Effective date: February 24, 2026</Text>
-            <Text style={{ color: modeVisual.labelColor, fontSize: 13, marginTop: 10, lineHeight: 20 }}>Undelivery provides budgeting and app-blocking assistance tools. It is not financial, medical, or legal advice. You are responsible for your spending and device usage decisions.</Text>
+            <Text style={{ color: modeVisual.labelColor, fontSize: 13, marginTop: 10, lineHeight: 20 }}>QuitBite provides budgeting and app-blocking assistance tools. It is not financial, medical, or legal advice. You are responsible for your spending and device usage decisions.</Text>
             <Text style={{ color: modeVisual.labelColor, fontSize: 13, marginTop: 10, lineHeight: 20 }}>Subscriptions auto-renew unless canceled in Apple ID settings at least 24 hours before renewal. Payment is charged to your Apple account according to the selected plan and trial terms shown before purchase.</Text>
             <Text style={{ color: modeVisual.labelColor, fontSize: 13, marginTop: 10, lineHeight: 20 }}>You agree not to misuse the service, reverse engineer it, or use it in ways that violate applicable law. We may suspend accounts for abuse, fraud, or security risks.</Text>
           </View>

@@ -49,7 +49,7 @@ function App() {
   const [hadSessionOnLaunch, setHadSessionOnLaunch] = useState(false);
   const [onboardingComplete, setOnboardingComplete] = useState(false);
   const [pendingOverride, setPendingOverride] = useState(false);
-  const [startOnWelcome, setStartOnWelcome] = useState(false);
+  const [startOnWelcome, setStartOnWelcome] = useState(true);
 
   useEffect(() => {
     const configurePurchases = async () => {
@@ -462,7 +462,7 @@ function AppContent({
     <View style={styles.container}>
       <View style={styles.paywallHeader}>
         <View style={styles.headerLeft}>
-          <Text style={styles.paywallTitle}>undelivery Pro</Text>
+          <Text style={styles.paywallTitle}>QuitBite Pro</Text>
           <Text style={styles.proStatusText}>{isPro ? 'Status: Pro Active' : 'Status: Free'}</Text>
         </View>
         <View style={styles.headerRight}>
