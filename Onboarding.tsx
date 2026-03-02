@@ -1857,7 +1857,7 @@ export default function Onboarding({
       return COLORS.white;
     }
     return COLORS.screenBg;
-  }, [current.type, current.key, isDarkScreen]);
+  }, [current.type, isDarkScreen]);
 
   const primaryLabel =
     current.type === 'welcome'
@@ -1896,7 +1896,6 @@ export default function Onboarding({
     current.type === 'auth-sign-in' ||
     current.type === 'auth-email-sign-up' ||
     current.type === 'auth-email-sign-in';
-  const isEmailAuthScreen = current.type === 'auth-email-sign-up' || current.type === 'auth-email-sign-in';
   const progressDotIndex = Math.min(2, Math.floor((step / Math.max(1, totalSteps - 1)) * 3));
   const normalizedAffirmationLength = affirmation.trim().length;
   const affirmationLengthDelta = Math.abs(normalizedAffirmationLength - REQUIRED_AFFIRMATION.length);
