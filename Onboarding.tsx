@@ -50,7 +50,7 @@ const PRO_ENTITLEMENT_ID = 'undelivery Pro';
 const ONBOARDING_DRAFT_KEY_PREFIX = '@onboarding_draft_v2';
 const MIN_WEEKLY_BUDGET = 10;
 const MAX_WEEKLY_BUDGET = 200;
-const { ScreenTimeManager } = NativeModules;
+const { ScreenTimeManager, NotificationPermissionManager } = NativeModules;
 
 const getOnboardingDraftKey = async (): Promise<string> => {
   const { data } = await supabase.auth.getUser();
@@ -256,6 +256,12 @@ const SCREENS = [
     body: 'Pick the delivery apps you want QuitBite to block when you hit your weekly budget.',
   },
   {
+    key: 'notifications-permission',
+    type: 'notifications-permission',
+    title: 'Stay on track with reminders',
+    body: 'Enable QuitBite notifications so we can send helpful reminders to keep your progress on track.',
+  },
+  {
     key: 'rating',
     type: 'rating',
     title: 'Give us a rating!',
@@ -312,11 +318,15 @@ const SCREENS = [
 export default function Onboarding({
   onSkipToDashboard,
   onOnboardingComplete,
+  onExistingOAuthAccountFound,
   startAtWelcome = false,
+  forcePaywallForAuthenticatedUser = false,
 }: {
   onSkipToDashboard?: () => void;
   onOnboardingComplete?: () => void;
+  onExistingOAuthAccountFound?: (provider: 'google' | 'apple' | null) => void;
   startAtWelcome?: boolean;
+  forcePaywallForAuthenticatedUser?: boolean;
 }) {
   const authChoiceIndex = SCREENS.findIndex((screen) => screen.type === 'auth-choice');
   const welcomeIndex = SCREENS.findIndex((screen) => screen.type === 'welcome');
@@ -326,7 +336,7 @@ export default function Onboarding({
   const [name, setName] = useState('');
   const [weeklyBudget, setWeeklyBudget] = useState('100');
   const [selectedPlan, setSelectedPlan] = useState<'weekly' | 'monthly' | 'annual' | null>('monthly');
-  const [didSignIn, setDidSignIn] = useState(false);
+  const [oauthProviderAttempt, setOauthProviderAttempt] = useState<'google' | 'apple' | null>(null);
   const [authEmail, setAuthEmail] = useState('');
   const [authPassword, setAuthPassword] = useState('');
   const [authError, setAuthError] = useState<string | null>(null);
@@ -347,6 +357,7 @@ export default function Onboarding({
   const [affirmation, setAffirmation] = useState('');
   const [authPolicyModalType, setAuthPolicyModalType] = useState<'terms' | 'privacy' | null>(null);
   const ratingPromptShownRef = useRef(false);
+  const oauthPendingScreenRef = useRef<'auth-sign-up' | 'auth-sign-in' | null>(null);
   const totalSteps = SCREENS.length;
   const current = SCREENS[step];
   const parsedWeeklyBudget = Number.parseInt(weeklyBudget, 10);
@@ -388,6 +399,37 @@ export default function Onboarding({
       packages.find((pkg) => String(pkg?.product?.identifier ?? '').toLowerCase().includes('monthly')) ??
       null
     );
+  };
+
+  const handleRequestNotifications = async () => {
+    if (!NotificationPermissionManager?.requestAuthorization) {
+      Alert.alert('Unavailable', 'Notification permissions are not available on this device.');
+      return;
+    }
+
+    try {
+      const granted = await NotificationPermissionManager.requestAuthorization();
+      if (granted) {
+        Alert.alert('Notifications enabled', 'QuitBite notifications are now enabled.');
+        return;
+      }
+
+      Alert.alert(
+        'Enable notifications in Settings',
+        'Notifications are currently off. Please enable them in iPhone Settings for QuitBite.',
+        [
+          { text: 'Not now', style: 'cancel' },
+          {
+            text: 'Open Settings',
+            onPress: () => {
+              void Linking.openSettings();
+            },
+          },
+        ],
+      );
+    } catch (error: any) {
+      Alert.alert('Permission failed', error?.message ?? 'Unable to enable notifications right now.');
+    }
   };
 
   useEffect(() => {
@@ -552,16 +594,18 @@ export default function Onboarding({
   const handleBack = () => {
     // Custom auth back flow
     if (current.type === 'auth-sign-in') {
-      const choiceIndex = SCREENS.findIndex((screen) => screen.type === 'auth-choice');
-      if (choiceIndex !== -1) {
-        setStep(choiceIndex);
+      const targetType = authSignInOnlyFromWelcome ? 'welcome' : 'auth-choice';
+      const targetIndex = SCREENS.findIndex((screen) => screen.type === targetType);
+      if (targetIndex !== -1) {
+        setStep(targetIndex);
         return;
       }
     }
     if (current.type === 'auth-email-sign-in') {
-      const signInIndex = SCREENS.findIndex((screen) => screen.type === 'auth-sign-in');
-      if (signInIndex !== -1) {
-        setStep(signInIndex);
+      const targetType = authSignInOnlyFromWelcome ? 'welcome' : 'auth-sign-in';
+      const targetIndex = SCREENS.findIndex((screen) => screen.type === targetType);
+      if (targetIndex !== -1) {
+        setStep(targetIndex);
         return;
       }
     }
@@ -573,13 +617,6 @@ export default function Onboarding({
       }
     }
     setStep((prev) => Math.max(0, prev - 1));
-  };
-
-  const handleSkipQuiz = () => {
-    const index = SCREENS.findIndex((screen) => screen.key === 'consequences');
-    if (index !== -1) {
-      setStep(index);
-    }
   };
 
   const handleRequestScreenTime = async () => {
@@ -644,6 +681,15 @@ export default function Onboarding({
     const { data: listener } = supabase.auth.onAuthStateChange((_event, newSession) => {
       setAuthComplete(Boolean(newSession?.user));
       setAuthUserId(newSession?.user?.id ?? null);
+      if (
+        _event === 'SIGNED_IN' &&
+        newSession?.user?.id &&
+        oauthPendingScreenRef.current
+      ) {
+        const pendingScreen = oauthPendingScreenRef.current;
+        oauthPendingScreenRef.current = null;
+        void resolveOAuthResult(newSession.user.id, pendingScreen);
+      }
     });
     return () => {
       isMounted = false;
@@ -734,82 +780,62 @@ export default function Onboarding({
     return success;
   };
 
+  const resolveOAuthResult = async (userId: string, screen: 'auth-sign-up' | 'auth-sign-in') => {
+    const { data: existingOnboarding, error: onboardingLookupError } = await supabase
+      .from('onboarding')
+      .select('user_id')
+      .eq('user_id', userId)
+      .maybeSingle();
+
+    if (onboardingLookupError) {
+      setAuthError('Could not verify account. Please try again.');
+      void supabase.auth.signOut();
+      return;
+    }
+
+    if (screen === 'auth-sign-in') {
+      if (!existingOnboarding) {
+        void supabase.functions.invoke('cleanup-rejected-oauth-user', { body: {} }).catch(() => {});
+        const msg = authSignInOnlyFromWelcome
+          ? 'No account found for this Apple/Google login. Complete onboarding first to create a new account.'
+          : 'No account found, please create account.';
+        setAuthError(msg);
+        Alert.alert('No account found', msg);
+        void supabase.auth.signOut();
+        return;
+      }
+      onOnboardingComplete?.();
+      return;
+    }
+
+    if (existingOnboarding) {
+      setAuthError('Account already exists, please log in.');
+      Alert.alert('Account already exists', 'Account already exists, please log in.');
+      void supabase.auth.signOut();
+      return;
+    }
+
+    const paywallIndex = SCREENS.findIndex((s) => s.type === 'paywall');
+    if (paywallIndex === -1) return;
+    if (!onboardingSaved && !onboardingSaving) {
+      await saveOnboarding();
+    }
+    setStep(paywallIndex);
+  };
+
   useEffect(() => {
-    if (current.type !== 'auth-sign-up' && current.type !== 'auth-sign-in') return;
-    if (!authComplete || !didSignIn) return;
-
-    if (current.type === 'auth-sign-in') {
-      const continueSignIn = async () => {
-        if (!authUserId) {
-          setAuthError('Could not verify account. Please try again.');
-          setDidSignIn(false);
-          void supabase.auth.signOut();
-          return;
-        }
-        const { data: existingOnboarding, error: onboardingLookupError } = await supabase
-          .from('onboarding')
-          .select('user_id')
-          .eq('user_id', authUserId)
-          .maybeSingle();
-
-        if (onboardingLookupError) {
-          setAuthError('Could not verify account. Please try again.');
-          setDidSignIn(false);
-          void supabase.auth.signOut();
-          return;
-        }
-
-        if (!existingOnboarding) {
-          const { error: cleanupError } = await supabase.functions.invoke('cleanup-rejected-oauth-user', {
-            body: {},
-          });
-          if (cleanupError) {
-            console.warn('Failed to cleanup rejected OAuth user', cleanupError.message);
-          }
-          setAuthError(
-            authSignInOnlyFromWelcome
-              ? 'No account found for this Apple/Google login. Complete onboarding first to create a new account.'
-              : 'No account found for this Apple/Google login. Please sign up first.',
-          );
-          setDidSignIn(false);
-          void supabase.auth.signOut();
-          return;
-        }
-
-        onOnboardingComplete?.();
-      };
-      void continueSignIn();
-      return;
+    if (!forcePaywallForAuthenticatedUser || !authComplete) return;
+    const isAuthFlowScreen =
+      current.type === 'auth-sign-in'
+      || current.type === 'auth-email-sign-in'
+      || current.type === 'auth-sign-up'
+      || current.type === 'auth-email-sign-up';
+    if (isAuthFlowScreen) return;
+    const paywallIndex = SCREENS.findIndex((screen) => screen.type === 'paywall');
+    if (paywallIndex !== -1 && step !== paywallIndex) {
+      setStep(paywallIndex);
     }
-
-    const continueAfterOAuthSignUp = async () => {
-      const paywallIndex = SCREENS.findIndex((screen) => screen.type === 'paywall');
-      if (paywallIndex !== -1) {
-        setStep(paywallIndex);
-      }
-    };
-
-    if (onboardingSaved) {
-      void continueAfterOAuthSignUp();
-      return;
-    }
-    if (onboardingSaving) return;
-    const completeOAuthOnboarding = async () => {
-      const saved = await saveOnboarding();
-      if (saved) {
-        await continueAfterOAuthSignUp();
-      }
-    };
-    void completeOAuthOnboarding();
-  }, [
-    authComplete,
-    authSignInOnlyFromWelcome,
-    authUserId,
-    didSignIn,
-    current.type,
-    onboardingSaved,
-    onboardingSaving,
-  ]);
+  }, [forcePaywallForAuthenticatedUser, authComplete, current.type, step]);
 
   useEffect(() => {
     if (!authSignInOnlyFromWelcome) return;
@@ -927,6 +953,7 @@ export default function Onboarding({
       const handleEmailAuth = async () => {
         setAuthLoading(true);
         setAuthError(null);
+        setOauthProviderAttempt(null);
         const payload = {
           email: authEmail.trim(),
           password: authPassword,
@@ -936,14 +963,28 @@ export default function Onboarding({
             ? await supabase.auth.signInWithPassword(payload)
             : await supabase.auth.signUp(payload);
         if (error) {
-          setAuthError(error.message);
-        } else if (isSignIn) {
-          onOnboardingComplete?.();
-        } else {
-          const paywallIndex = SCREENS.findIndex((screen) => screen.type === 'paywall');
-          if (paywallIndex !== -1) {
-            setStep(paywallIndex);
+          const normalizedError = error.message.toLowerCase();
+          if (!isSignIn && normalizedError.includes('already registered')) {
+            const existingAccountMessage = 'Account already exists, please log in.';
+            setAuthError(existingAccountMessage);
+            Alert.alert('Account already exists', existingAccountMessage);
+          } else {
+            setAuthError(error.message);
           }
+          setAuthLoading(false);
+          return;
+        }
+        if (isSignIn) {
+          setAuthLoading(false);
+          onOnboardingComplete?.();
+          return;
+        }
+        const paywallIndex = SCREENS.findIndex((screen) => screen.type === 'paywall');
+        if (paywallIndex !== -1) {
+          if (!onboardingSaved && !onboardingSaving) {
+            await saveOnboarding();
+          }
+          setStep(paywallIndex);
         }
         setAuthLoading(false);
       };
@@ -951,7 +992,9 @@ export default function Onboarding({
       const handleAppleAuth = async () => {
         setAuthLoading(true);
         setAuthError(null);
-        setDidSignIn(true);
+        setOauthProviderAttempt('apple');
+        const appleScreen = current.type as 'auth-sign-up' | 'auth-sign-in';
+        oauthPendingScreenRef.current = null;
         try {
           const nonce = `nonce-${Date.now()}-${Math.random().toString(36).slice(2)}`;
           const appleResponse = await appleAuth.performRequest({
@@ -962,19 +1005,30 @@ export default function Onboarding({
           const identityToken = appleResponse.identityToken;
           if (!identityToken) {
             setAuthError('Apple sign in failed: missing identity token.');
+            setAuthLoading(false);
             return;
           }
-          const { error } = await supabase.auth.signInWithIdToken({
+          const { data: authData, error } = await supabase.auth.signInWithIdToken({
             provider: 'apple',
             token: identityToken,
             nonce,
           });
           if (error) {
             setAuthError(error.message);
+            setAuthLoading(false);
+            return;
           }
+          const userId = authData?.user?.id ?? null;
+          if (!userId) {
+            setAuthError('Could not verify account. Please try again.');
+            setAuthLoading(false);
+            return;
+          }
+          await resolveOAuthResult(userId, appleScreen);
         } catch (error: any) {
           if (error?.code === appleAuth.Error.CANCELED) {
-            setDidSignIn(false);
+            setOauthProviderAttempt(null);
+            setAuthLoading(false);
             return;
           }
           setAuthError(error?.message ?? 'Unable to sign in with Apple.');
@@ -986,7 +1040,8 @@ export default function Onboarding({
       const handleGoogleAuth = async () => {
         setAuthLoading(true);
         setAuthError(null);
-        setDidSignIn(true);
+        setOauthProviderAttempt('google');
+        oauthPendingScreenRef.current = current.type as 'auth-sign-up' | 'auth-sign-in';
         const { data, error } = await supabase.auth.signInWithOAuth({
           provider: 'google',
           options: {
@@ -1007,7 +1062,9 @@ export default function Onboarding({
             <Pressable
               onPress={() => {
                 const prevType = isEmailAuthScreen
-                  ? (isSignInScreen ? 'auth-sign-in' : 'auth-sign-up')
+                  ? (isSignInScreen
+                    ? (authSignInOnlyFromWelcome ? 'welcome' : 'auth-sign-in')
+                    : 'auth-sign-up')
                   : authSignInOnlyFromWelcome && isSignInScreen
                     ? 'welcome'
                     : 'auth-choice';
@@ -1617,6 +1674,21 @@ export default function Onboarding({
       );
     }
 
+    if (current.type === 'notifications-permission') {
+      return (
+        <View style={styles.permissionWrap}>
+          <Text style={[styles.formTitle, styles.formTitleAccent]}>{current.title}</Text>
+          <Text style={styles.formHint}>{current.body}</Text>
+          <View style={styles.permissionCard}>
+            <Text style={styles.permissionTitle}>Enable QuitBite notifications</Text>
+            <Pressable onPress={handleRequestNotifications} style={styles.permissionButton}>
+              <Text style={styles.permissionButtonText}>Allow notifications</Text>
+            </Pressable>
+          </View>
+        </View>
+      );
+    }
+
     if (current.type === 'consequences-combined') {
       const rows = [
         { mascot: require('./mascots/fatty.png'), title: 'Cravings get stronger', body: 'The more often you order, the more your brain expects instant comfort on demand.' },
@@ -1790,9 +1862,7 @@ export default function Onboarding({
             ))}
           </View>
           {current.key === 'q1' ? (
-            <Pressable onPress={handleSkipQuiz} style={styles.skipQuizButton}>
-              <Text style={styles.skipQuizText}>Skip quiz</Text>
-            </Pressable>
+            null
           ) : null}
         </View>
       );
@@ -1880,6 +1950,8 @@ export default function Onboarding({
                       ? 'Continue'
                       : current.type === 'permission'
                         ? 'Continue'
+                        : current.type === 'notifications-permission'
+                          ? 'Continue'
                           : current.type === 'select-apps'
                             ? 'Continue'
                             : current.type === 'access'
@@ -1992,6 +2064,18 @@ export default function Onboarding({
               if (authIndex !== -1) setStep(authIndex);
             }}>
               <Text style={styles.welcomeSignInHint}>Existing user? Sign in</Text>
+            </Pressable>
+            <Pressable
+              style={styles.welcomeSkipButton}
+              onPress={() => {
+                setAuthSignInOnlyFromWelcome(false);
+                const authChoiceScreenIndex = SCREENS.findIndex((s) => s.type === 'auth-choice');
+                if (authChoiceScreenIndex !== -1) {
+                  setStep(authChoiceScreenIndex);
+                }
+              }}
+            >
+              <Text style={styles.welcomeSkipText}>Temp: Skip to login/create account</Text>
             </Pressable>
             <Pressable
               onPress={() => {
@@ -3193,19 +3277,6 @@ const styles = StyleSheet.create({
   paywallFootnoteText: {
     fontSize: 12,
     color: 'rgba(255,255,255,0.6)',
-  },
-  skipQuizButton: {
-    alignSelf: 'center',
-    marginTop: 28,
-    paddingVertical: 8,
-    paddingHorizontal: 20,
-    borderRadius: 20,
-    backgroundColor: 'rgba(0,0,0,0.03)',
-  },
-  skipQuizText: {
-    fontSize: 13,
-    color: COLORS.muted,
-    fontWeight: '600',
   },
   formWrap: {
     marginTop: 24,

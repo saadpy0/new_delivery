@@ -9,7 +9,7 @@ class ShieldConfigurationExtension: ShieldConfigurationDataSource {
 
   private func subtitleText(for blockType: String) -> String {
     if blockType == "precau" {
-      return "Precautionary mode is protecting your focus right now.\nOpen QuitBite to override."
+      return "Preventive mode is protecting your focus right now.\nOpen QuitBite to override."
     }
     return "You've hit your delivery budget for this cycle.\nOpen QuitBite to override."
   }

@@ -9,6 +9,7 @@ import { NewAppScreen } from '@react-native/new-app-screen';
 import { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   Linking,
   NativeModules,
   Platform,
@@ -48,6 +49,8 @@ function App() {
   const [showDashboardOverride, setShowDashboardOverride] = useState(false);
   const [hadSessionOnLaunch, setHadSessionOnLaunch] = useState(false);
   const [onboardingComplete, setOnboardingComplete] = useState(false);
+  const [hasActiveSubscription, setHasActiveSubscription] = useState(false);
+  const [existingOAuthAccountProvider, setExistingOAuthAccountProvider] = useState<'google' | 'apple' | null>(null);
   const [pendingOverride, setPendingOverride] = useState(false);
   const [startOnWelcome, setStartOnWelcome] = useState(true);
 
@@ -82,24 +85,43 @@ function App() {
 
       if (!newSession?.user?.id) {
         setOnboardingComplete(false);
+        setHasActiveSubscription(false);
         return;
       }
 
-      const { data: onboardingRow, error } = await supabase
-        .from('onboarding')
-        .select('user_id')
-        .eq('user_id', newSession.user.id)
-        .maybeSingle();
+      const [{ data: onboardingRow, error: onboardingError }, { data: subscriptionRow, error: subscriptionError }] = await Promise.all([
+        supabase
+          .from('onboarding')
+          .select('user_id')
+          .eq('user_id', newSession.user.id)
+          .maybeSingle(),
+        supabase
+          .from('subscriptions')
+          .select('rc_entitlement_active')
+          .eq('user_id', newSession.user.id)
+          .maybeSingle(),
+      ]);
 
       if (!isMounted) return;
 
-      if (error) {
+      if (onboardingError || subscriptionError) {
         setOnboardingComplete(false);
+        setHasActiveSubscription(false);
         return;
       }
 
-      setOnboardingComplete(Boolean(onboardingRow));
-      if (onboardingRow) {
+      let subscribed = Boolean(subscriptionRow?.rc_entitlement_active);
+      if (!subscribed && Platform.OS === 'ios') {
+        try {
+          const info = await Purchases.getCustomerInfo();
+          subscribed = Boolean((info as any)?.entitlements?.active?.[PRO_ENTITLEMENT_ID]);
+        } catch {
+          // Keep DB-derived status if RevenueCat check fails.
+        }
+      }
+      setHasActiveSubscription(subscribed);
+      setOnboardingComplete(Boolean(onboardingRow) && subscribed);
+      if (onboardingRow && subscribed) {
         setHadSessionOnLaunch(true);
       }
     };
@@ -125,6 +147,19 @@ function App() {
   }, []);
 
   useEffect(() => {
+    if (!session?.user?.id || !onboardingComplete || !hasActiveSubscription || !existingOAuthAccountProvider) {
+      return;
+    }
+
+    const providerLabel = existingOAuthAccountProvider === 'google' ? 'Google' : 'Apple';
+    Alert.alert(
+      'Existing account found',
+      `We already found an account connected to this ${providerLabel} account. You were signed in automatically.`,
+    );
+    setExistingOAuthAccountProvider(null);
+  }, [session?.user?.id, onboardingComplete, hasActiveSubscription, existingOAuthAccountProvider]);
+
+  useEffect(() => {
     const syncRevenueCatUser = async () => {
       if (Platform.OS !== 'ios') return;
       if (!REVENUECAT_IOS_API_KEY || REVENUECAT_IOS_API_KEY === REVENUECAT_IOS_API_KEY_PLACEHOLDER) {
@@ -148,6 +183,15 @@ function App() {
 
     void syncRevenueCatUser();
   }, [session?.user?.id]);
+
+  const handleOnboardingComplete = () => {
+    // Route directly to dashboard after successful auth/purchase completion.
+    // This avoids transient paywall redirects while async subscription/session
+    // sync catches up.
+    setShowDashboardOverride(true);
+    setHasActiveSubscription(true);
+    setOnboardingComplete(true);
+  };
 
   useEffect(() => {
     const clearLegacyReminders = async () => {
@@ -269,7 +313,7 @@ function App() {
           <ActivityIndicator />
           <Text style={styles.mutedText}>Loading…</Text>
         </View>
-      ) : (onboardingComplete || showDashboardOverride) && session ? (
+      ) : ((onboardingComplete && hasActiveSubscription) || showDashboardOverride) && session ? (
         <MainDashboard
           email={session?.user?.email ?? null}
           pendingOverride={pendingOverride}
@@ -292,8 +336,10 @@ function App() {
                 console.warn('Failed to clear blocking/reminders on sign out', error);
               }
               setOnboardingComplete(false);
+              setHasActiveSubscription(false);
               setHadSessionOnLaunch(false);
               setShowDashboardOverride(false);
+              setExistingOAuthAccountProvider(null);
               setStartOnWelcome(true);
               await AsyncStorage.removeItem(ONBOARDING_DRAFT_KEY);
               await supabase.auth.signOut();
@@ -303,8 +349,10 @@ function App() {
       ) : (
         <Onboarding
           onSkipToDashboard={() => setShowDashboardOverride(true)}
-          onOnboardingComplete={() => setOnboardingComplete(true)}
+          onOnboardingComplete={handleOnboardingComplete}
+          onExistingOAuthAccountFound={setExistingOAuthAccountProvider}
           startAtWelcome={startOnWelcome}
+          forcePaywallForAuthenticatedUser={Boolean(session?.user?.id && !hasActiveSubscription)}
         />
       )}
     </SafeAreaProvider>
